@@ -34,7 +34,6 @@ def clean_text(text):
     text = text.replace('→', '->')
     return text.strip()
 
-# Helper to extract brand from product name
 def get_brand(product):
     product_upper = product.upper()
     if "BOYS" in product_upper:
@@ -96,7 +95,7 @@ def process_inventory_file(uploaded_file):
                     "Article": sku_row['Article'],
                     "MRP": sku_row['MRP'],
                     "Quantity": quantity,
-                    "Brand": get_brand(sku_row['Product'])   # added brand
+                    "Brand": get_brand(sku_row['Product'])
                 })
         complete_inventory[branch] = pd.DataFrame(branch_records)
     return complete_inventory, all_skus
@@ -206,6 +205,18 @@ def generate_table_pdf(dataframe, title, columns=None, landscape=False):
     return pdf.output(dest='S').encode('latin-1', errors='ignore')
 
 # ============================================
+# SESSION STATE INITIALIZATION
+# ============================================
+
+def init_session_state(complete_inventory):
+    if "inventory_data" not in st.session_state:
+        st.session_state.inventory_data = complete_inventory.copy()
+    else:
+        for branch in complete_inventory.keys():
+            if branch not in st.session_state.inventory_data:
+                st.session_state.inventory_data[branch] = complete_inventory[branch].copy()
+
+# ============================================
 # SIDEBAR
 # ============================================
 
@@ -233,12 +244,13 @@ if uploaded_file:
             st.error("Could not parse file. Check format.")
             st.stop()
         transfers_df = calculate_all_transfers(complete_inventory, BRANCHES)
+        init_session_state(complete_inventory)
         
         branch_needs = {}
         for branch in BRANCH_ORDER:
             if branch == "PRAGATHI SHOES":
                 continue
-            df = complete_inventory[branch]
+            df = st.session_state.inventory_data[branch]
             target = BRANCHES[branch]["target"]
             total_needed = (target - df['Quantity']).clip(lower=0).sum()
             branch_needs[BRANCHES[branch]["name"]] = int(total_needed)
@@ -263,7 +275,7 @@ if uploaded_file:
             for branch in BRANCH_ORDER:
                 if branch == "PRAGATHI SHOES":
                     continue
-                df = complete_inventory[branch]
+                df = st.session_state.inventory_data[branch]
                 config = BRANCHES[branch]
                 total_stock = int(df['Quantity'].sum())
                 target_total = config['target'] * len(df)
@@ -302,13 +314,13 @@ if uploaded_file:
         # Zero Stock Anywhere
         with tabs[2]:
             zero_across_all = []
-            first_branch_df = complete_inventory[BRANCH_ORDER[0]]
+            first_branch_df = st.session_state.inventory_data[BRANCH_ORDER[0]]
             if not first_branch_df.empty:
                 for sku in first_branch_df['SKU'].unique():
                     total = 0
                     sku_info = None
                     for branch in BRANCH_ORDER:
-                        df = complete_inventory[branch]
+                        df = st.session_state.inventory_data[branch]
                         row = df[df['SKU'] == sku]
                         if not row.empty:
                             total += row['Quantity'].iloc[0]
@@ -334,11 +346,11 @@ if uploaded_file:
             else:
                 st.success("All products have stock in at least one branch.")
         
-        # Branch-specific tabs
+        # Branch-specific tabs with search, multi-select, delete for zero stock items
         for idx, branch in enumerate(BRANCH_ORDER):
             with tabs[idx + 3]:
                 config = BRANCHES[branch]
-                branch_df = complete_inventory[branch]
+                branch_df = st.session_state.inventory_data[branch].copy()
                 if branch_df.empty:
                     st.info(f"No data for {config['name']}")
                     continue
@@ -356,28 +368,61 @@ if uploaded_file:
                 col4.metric("Low Stock", low_count)
                 col5.metric("Surplus", surplus_count)
                 
-                # Table 1: Zero Stock Items (showing Brand, Size, etc.)
+                # ===== ZERO STOCK TABLE with search, multi‑select, delete =====
                 st.subheader("Table 1: Zero Stock Items")
-                zero_stock = branch_df[branch_df['Quantity'] == 0]
+                zero_stock = branch_df[branch_df['Quantity'] == 0].copy()
+                
                 if not zero_stock.empty:
-                    zero_display = zero_stock[['Product', 'Brand', 'Size', 'Colour', 'Article', 'MRP']]
-                    st.dataframe(zero_display, use_container_width=True)
-                    if st.button(f"📄 PDF - Zero Stock", key=f"zero_{branch}"):
-                        pdf_data = generate_table_pdf(zero_display, f"{config['name']} - Zero Stock Items")
+                    search_article = st.text_input(f"🔍 Search Article Number", key=f"search_article_{branch}")
+                    if search_article:
+                        zero_stock = zero_stock[zero_stock['Article'].str.contains(search_article, case=False, na=False)]
+                    
+                    display_zero = zero_stock[['Product', 'Brand', 'Size', 'Colour', 'Article', 'MRP']].reset_index(drop=True)
+                    display_zero.insert(0, "Select", False)
+                    
+                    edited_df = st.data_editor(
+                        display_zero,
+                        column_config={"Select": st.column_config.CheckboxColumn("Select", default=False)},
+                        disabled=['Product', 'Brand', 'Size', 'Colour', 'Article', 'MRP'],
+                        hide_index=True,
+                        key=f"zero_editor_{branch}"
+                    )
+                    
+                    selected_indices = edited_df[edited_df['Select'] == True].index.tolist()
+                    
+                    col_del, col_reset = st.columns(2)
+                    with col_del:
+                        if st.button(f"🗑️ Delete Selected", key=f"delete_zero_{branch}"):
+                            if selected_indices:
+                                selected_articles = edited_df.iloc[selected_indices]['Article'].tolist()
+                                new_branch_df = branch_df[~branch_df['Article'].isin(selected_articles)]
+                                st.session_state.inventory_data[branch] = new_branch_df
+                                st.success(f"Deleted {len(selected_articles)} item(s) from {config['name']}")
+                                st.rerun()
+                            else:
+                                st.warning("No items selected")
+                    with col_reset:
+                        if st.button(f"🔄 Reset (undo deletions)", key=f"reset_zero_{branch}"):
+                            st.session_state.inventory_data[branch] = complete_inventory[branch].copy()
+                            st.success(f"Reset {config['name']} to original data")
+                            st.rerun()
+                    
+                    if st.button(f"📄 PDF - Zero Stock", key=f"zero_pdf_{branch}"):
+                        pdf_data = generate_table_pdf(zero_stock[['Product', 'Brand', 'Size', 'Colour', 'Article', 'MRP']], 
+                                                      f"{config['name']} - Zero Stock Items")
                         if pdf_data:
                             st.download_button("✅ Download", pdf_data, f"{branch}_zero_stock.pdf")
                 else:
                     st.success("No zero stock items")
                 
-                # Table 2: Low Stock Items (remove Quantity column, remove min required, show Currently Available)
+                # ===== LOW STOCK TABLE =====
                 st.subheader("Table 2: Low Stock Items")
-                low_stock = branch_df[(branch_df['Quantity'] > 0) & (branch_df['Quantity'] < config['min'])]
+                low_stock = branch_df[(branch_df['Quantity'] > 0) & (branch_df['Quantity'] < config['min'])].copy()
                 if not low_stock.empty:
                     low_display = low_stock[['Product', 'Brand', 'Size', 'Colour', 'Article', 'MRP', 'Quantity']].copy()
                     low_display.rename(columns={'Quantity': 'Currently Available'}, inplace=True)
-                    # Remove any "min required" column if exists (we never added it)
                     st.dataframe(low_display, use_container_width=True)
-                    if st.button(f"📄 PDF - Low Stock", key=f"low_{branch}"):
+                    if st.button(f"📄 PDF - Low Stock", key=f"low_pdf_{branch}"):
                         pdf_data = generate_table_pdf(low_display, f"{config['name']} - Low Stock Items", 
                                                      columns=['Product', 'Brand', 'Size', 'Colour', 'Article', 'MRP', 'Currently Available'])
                         if pdf_data:
@@ -385,7 +430,7 @@ if uploaded_file:
                 else:
                     st.success("No low stock items")
                 
-                # Table 3: Complete Inventory (rename 'Quantity' to 'Currently Available')
+                # ===== COMPLETE INVENTORY =====
                 st.subheader("Table 3: Complete Inventory")
                 full_display = branch_df[['Product', 'Brand', 'Size', 'Colour', 'Article', 'MRP', 'Quantity']].copy()
                 full_display.rename(columns={'Quantity': 'Currently Available'}, inplace=True)
@@ -393,18 +438,18 @@ if uploaded_file:
                     lambda x: 'Zero' if x==0 else ('Low' if x<config['min'] else ('Surplus' if x>config['target'] else 'OK'))
                 )
                 st.dataframe(full_display, use_container_width=True)
-                if st.button(f"📄 PDF - Complete Inventory", key=f"full_{branch}"):
+                if st.button(f"📄 PDF - Complete Inventory", key=f"full_pdf_{branch}"):
                     pdf_data = generate_table_pdf(full_display, f"{config['name']} - Complete Inventory", landscape=True)
                     if pdf_data:
                         st.download_button("✅ Download", pdf_data, f"{branch}_complete_inventory.pdf")
                 
-                # Transfers for this branch
+                # ===== TRANSFERS =====
                 branch_transfers = get_branch_transfers(transfers_df, branch)
                 if not branch_transfers.empty:
                     st.subheader("Suggested Transfers (Send/Receive)")
                     transfer_display = branch_transfers[['Product', 'Brand', 'Size', 'Colour', 'From Branch', 'To Branch', 'Transfer Qty']]
                     st.dataframe(transfer_display, use_container_width=True)
-                    if st.button(f"📄 PDF - Transfers", key=f"trans_{branch}"):
+                    if st.button(f"📄 PDF - Transfers", key=f"trans_pdf_{branch}"):
                         pdf_data = generate_table_pdf(transfer_display, f"{config['name']} - Transfer Orders", landscape=True)
                         if pdf_data:
                             st.download_button("✅ Download", pdf_data, f"{branch}_transfers.pdf")
@@ -415,7 +460,8 @@ else:
     ## Features:
     - **Branch-wise Stock Needed Analysis** in Dashboard
     - **PDF Generation** for every table
-    - **Brand column** added (next to Size)
+    - **Zero Stock Table** with search by Article number, multi‑select delete, reset option
+    - **Deletions only affect the current branch** (other branches unchanged)
+    - **Brand column** added
     - **"Currently Available"** instead of "Quantity"
-    - Low stock items table simplified (no min required, no extra quantity column)
     """)
