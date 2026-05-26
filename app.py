@@ -5,10 +5,10 @@ from fpdf import FPDF
 from datetime import datetime
 import re
 
-st.set_page_config(page_title="Pragathi Shoes - Sales-Driven Transfer System", layout="wide")
+st.set_page_config(page_title="Pragathi Shoes - Complete Transfer System", layout="wide")
 
-st.title("👞 Pragathi Shoes - Sales-Driven Stock Transfer System")
-st.markdown("**Intelligent stock redistribution based on actual sales data**")
+st.title("👞 Pragathi Shoes - Complete Stock Transfer System")
+st.markdown("**Intelligent surplus redistribution across all branches including warehouse**")
 
 # ============================================
 # BRANCH CONFIGURATION
@@ -27,82 +27,26 @@ BRANCH_ORDER = ["POPULAR SHOE COMPANY", "PRAGATHI SHOES AMD 2", "PRAGATHI SHOES 
                 "PRAGATHI SHOES BALAGA", "PRAGATHI SHOES AKP", "PRAGATHI SHOES"]
 
 def clean_text(text):
+    """Remove special characters for PDF"""
     if pd.isna(text):
         return ""
     text = str(text)
     text = re.sub(r'[^\x00-\x7F]+', '', text)
     text = text.replace('→', '->')
+    text = text.replace('✓', '')
+    text = text.replace('✅', '')
+    text = text.replace('⚠️', '')
+    text = text.replace('🔴', '')
+    text = text.replace('🟢', '')
+    text = text.replace('🟡', '')
     return text.strip()
 
 # ============================================
-# SALES DATA PROCESSING
+# DATA PROCESSING
 # ============================================
 
-def process_sales_file(uploaded_file):
-    """Parse sales CSV and calculate demand"""
-    
-    df = pd.read_csv(uploaded_file)
-    
-    sales_data = {}
-    
-    # Try to detect sales file structure
-    # Look for common column names
-    possible_product_cols = ['product', 'item', 'sku', 'product_name', 'description']
-    possible_qty_cols = ['quantity', 'qty', 'sold', 'sales_qty']
-    possible_branch_cols = ['branch', 'store', 'location', 'branch_name']
-    possible_date_cols = ['date', 'sale_date', 'transaction_date']
-    
-    product_col = None
-    qty_col = None
-    branch_col = None
-    date_col = None
-    
-    for col in df.columns:
-        col_lower = col.lower()
-        if any(p in col_lower for p in possible_product_cols):
-            product_col = col
-        if any(q in col_lower for q in possible_qty_cols):
-            qty_col = col
-        if any(b in col_lower for b in possible_branch_cols):
-            branch_col = col
-        if any(d in col_lower for d in possible_date_cols):
-            date_col = col
-    
-    if product_col is None or qty_col is None:
-        st.error("Could not identify product and quantity columns in sales file")
-        return None, None
-    
-    # Aggregate sales by branch and product
-    if branch_col:
-        sales_summary = df.groupby([branch_col, product_col])[qty_col].sum().reset_index()
-        sales_summary.columns = ['Branch', 'Product', 'Sales_Qty']
-    else:
-        sales_summary = df.groupby(product_col)[qty_col].sum().reset_index()
-        sales_summary.columns = ['Product', 'Sales_Qty']
-        sales_summary['Branch'] = 'ALL'
-    
-    # Calculate sales velocity (if date column exists)
-    if date_col:
-        df[date_col] = pd.to_datetime(df[date_col])
-        max_date = df[date_col].max()
-        min_date = df[date_col].min()
-        days = (max_date - min_date).days + 1
-        sales_summary['Daily_Sales_Rate'] = sales_summary['Sales_Qty'] / days
-        sales_summary['Weekly_Sales_Rate'] = sales_summary['Daily_Sales_Rate'] * 7
-        sales_summary['Monthly_Sales_Rate'] = sales_summary['Daily_Sales_Rate'] * 30
-    else:
-        sales_summary['Daily_Sales_Rate'] = sales_summary['Sales_Qty'] / 30  # Assume 30 days
-        sales_summary['Weekly_Sales_Rate'] = sales_summary['Daily_Sales_Rate'] * 7
-        sales_summary['Monthly_Sales_Rate'] = sales_summary['Sales_Qty']
-    
-    return sales_summary, {"product_col": product_col, "qty_col": qty_col, "branch_col": branch_col}
-
-# ============================================
-# STOCK DATA PROCESSING
-# ============================================
-
-def process_stock_file(uploaded_file):
-    """Parse stock CSV and organize by branch"""
+def process_inventory_file(uploaded_file):
+    """Parse uploaded CSV and organize by branch"""
     
     df = pd.read_csv(uploaded_file, header=None)
     
@@ -134,22 +78,26 @@ def process_stock_file(uploaded_file):
     if df_items.empty:
         return None, None
     
+    # Get unique SKUs across all branches
     df_items['SKU'] = df_items.apply(lambda x: f"{x['Product']}|{x['Colour']}|{x['Size']}|{x['Article']}|{x['MRP']}", axis=1)
     all_skus = df_items['SKU'].unique()
     
-    # Create complete inventory matrix
+    # Create complete inventory matrix (all branches x all SKUs)
     complete_inventory = {}
     
     for branch in BRANCHES.keys():
         branch_data = df_items[df_items['Branch'] == branch] if branch in df_items['Branch'].values else pd.DataFrame()
         
+        # Create a dictionary of SKU -> Quantity for this branch
         sku_dict = {}
         if not branch_data.empty:
             for _, row in branch_data.iterrows():
                 sku_dict[row['SKU']] = row['Quantity']
         
+        # For each SKU, ensure we have a record (0 if not present)
         branch_records = []
         for sku in all_skus:
+            # Get SKU details from any branch that has it
             sku_row = df_items[df_items['SKU'] == sku].iloc[0] if not df_items[df_items['SKU'] == sku].empty else None
             
             if sku_row is not None:
@@ -169,12 +117,8 @@ def process_stock_file(uploaded_file):
     
     return complete_inventory, all_skus
 
-# ============================================
-# DEMAND-DRIVEN TRANSFER CALCULATION
-# ============================================
-
-def calculate_sales_driven_transfers(complete_inventory, sales_data, branches_config):
-    """Calculate transfers based on sales velocity and current stock"""
+def calculate_all_transfers(complete_inventory, branches_config):
+    """Calculate transfers between ALL branches including warehouse"""
     
     all_transfers = []
     
@@ -186,141 +130,228 @@ def calculate_sales_driven_transfers(complete_inventory, sales_data, branches_co
     all_skus = first_branch['SKU'].unique()
     
     for sku in all_skus:
-        # Get SKU details
-        sku_row = first_branch[first_branch['SKU'] == sku].iloc[0] if not first_branch.empty else None
-        if sku_row is None:
+        # Get current stock for each branch
+        branch_stock = {}
+        sku_details = {}
+        
+        for branch, df in complete_inventory.items():
+            sku_row = df[df['SKU'] == sku]
+            if not sku_row.empty:
+                quantity = sku_row['Quantity'].iloc[0]
+                branch_stock[branch] = quantity
+                if not sku_details:
+                    sku_details = {
+                        "Product": sku_row['Product'].iloc[0],
+                        "Colour": sku_row['Colour'].iloc[0],
+                        "Size": sku_row['Size'].iloc[0],
+                        "Article": sku_row['Article'].iloc[0],
+                        "MRP": sku_row['MRP'].iloc[0]
+                    }
+            else:
+                branch_stock[branch] = 0
+        
+        if not sku_details:
             continue
         
-        product_name = sku_row['Product']
+        # Calculate surplus and deficit for ALL branches
+        branch_status = []
+        for branch, stock in branch_stock.items():
+            target = branches_config[branch]["target"]
+            if stock > target:
+                surplus = stock - target
+                branch_status.append({
+                    "branch": branch, 
+                    "status": "surplus", 
+                    "current": stock, 
+                    "target": target,
+                    "difference": surplus
+                })
+            elif stock < target:
+                needed = target - stock
+                branch_status.append({
+                    "branch": branch, 
+                    "status": "deficit", 
+                    "current": stock, 
+                    "target": target,
+                    "difference": needed
+                })
         
-        # Get sales data for this product
-        product_sales = sales_data[sales_data['Product'].str.contains(product_name, case=False, na=False)] if not sales_data.empty else pd.DataFrame()
+        # Sort: surplus first, then deficit
+        surplus_branches = [b for b in branch_status if b["status"] == "surplus"]
+        deficit_branches = [b for b in branch_status if b["status"] == "deficit"]
         
-        for branch, config in branches_config.items():
-            if branch == "PRAGATHI SHOES":
-                continue
+        # Match surplus to deficit
+        for surplus in surplus_branches:
+            remaining_surplus = surplus["difference"]
             
-            # Get current stock
-            current_stock = complete_inventory[branch][complete_inventory[branch]['SKU'] == sku]['Quantity'].iloc[0] if not complete_inventory[branch].empty else 0
-            
-            # Calculate demand-based target
-            branch_sales = product_sales[product_sales['Branch'].str.contains(branch, case=False, na=False)] if not product_sales.empty and 'Branch' in product_sales.columns else product_sales
-            
-            if not branch_sales.empty:
-                # Dynamic target based on sales velocity
-                weekly_sales = branch_sales['Weekly_Sales_Rate'].iloc[0] if 'Weekly_Sales_Rate' in branch_sales.columns else branch_sales['Sales_Qty'].iloc[0] / 4
-                # Target = 2 weeks of sales + safety stock
-                dynamic_target = max(int(weekly_sales * 2) + config['min'], config['min'])
-                dynamic_target = min(dynamic_target, 30)  # Cap at 30
-            else:
-                # No sales history, use default target
-                dynamic_target = config['target']
-            
-            # Update target in config for this calculation
-            config['effective_target'] = dynamic_target
-            
-            # Calculate surplus/deficit
-            if current_stock > dynamic_target:
-                surplus = current_stock - dynamic_target
-                all_transfers.append({
-                    "SKU": sku,
-                    "Product": sku_row['Product'],
-                    "Colour": sku_row['Colour'],
-                    "Size": sku_row['Size'],
-                    "Article": sku_row['Article'],
-                    "MRP": sku_row['MRP'],
-                    "Branch": branch,
-                    "Current Stock": current_stock,
-                    "Sales Driven Target": dynamic_target,
-                    "Surplus": surplus,
-                    "Status": "SURPLUS"
-                })
-            elif current_stock < config['min']:
-                deficit = config['min'] - current_stock
-                all_transfers.append({
-                    "SKU": sku,
-                    "Product": sku_row['Product'],
-                    "Colour": sku_row['Colour'],
-                    "Size": sku_row['Size'],
-                    "Article": sku_row['Article'],
-                    "MRP": sku_row['MRP'],
-                    "Branch": branch,
-                    "Current Stock": current_stock,
-                    "Sales Driven Target": dynamic_target,
-                    "Deficit": deficit,
-                    "Status": "DEFICIT"
-                })
+            for deficit in deficit_branches[:]:
+                if remaining_surplus <= 0:
+                    break
+                
+                transfer_qty = min(remaining_surplus, deficit["difference"])
+                
+                if transfer_qty > 0:
+                    all_transfers.append({
+                        "SKU": sku,
+                        "Product": sku_details['Product'],
+                        "Colour": sku_details['Colour'],
+                        "Size": sku_details['Size'],
+                        "Article": sku_details['Article'],
+                        "MRP": sku_details['MRP'],
+                        "From Branch": surplus["branch"],
+                        "From Current": surplus["current"],
+                        "From Target": surplus["target"],
+                        "To Branch": deficit["branch"],
+                        "To Current": deficit["current"],
+                        "To Target": deficit["target"],
+                        "Transfer Qty": transfer_qty,
+                        "After Transfer From": surplus["current"] - transfer_qty,
+                        "After Transfer To": deficit["current"] + transfer_qty
+                    })
+                    
+                    remaining_surplus -= transfer_qty
+                    deficit["difference"] -= transfer_qty
+                    
+                    if deficit["difference"] <= 0:
+                        deficit_branches.remove(deficit)
     
-    # Create transfer pairs
-    transfer_pairs = []
-    surplus_items = [t for t in all_transfers if t['Status'] == 'SURPLUS']
-    deficit_items = [t for t in all_transfers if t['Status'] == 'DEFICIT']
+    return pd.DataFrame(all_transfers) if all_transfers else pd.DataFrame()
+
+def get_products_with_no_stock_anywhere(complete_inventory):
+    """Find products that have zero stock in ALL branches"""
     
-    for surplus in surplus_items:
-        for deficit in deficit_items[:]:
-            if surplus['SKU'] == deficit['SKU'] and surplus['Surplus'] > 0 and deficit['Deficit'] > 0:
-                transfer_qty = min(surplus['Surplus'], deficit['Deficit'])
-                transfer_pairs.append({
-                    "Product": surplus['Product'],
-                    "Colour": surplus['Colour'],
-                    "Size": surplus['Size'],
-                    "Article": surplus['Article'],
-                    "MRP": surplus['MRP'],
-                    "From Branch": surplus['Branch'],
-                    "From Stock": surplus['Current Stock'],
-                    "From Target": surplus['Sales Driven Target'],
-                    "To Branch": deficit['Branch'],
-                    "To Stock": deficit['Current Stock'],
-                    "To Target": deficit['Sales Driven Target'],
-                    "Transfer Qty": transfer_qty,
-                    "Reason": f"Sales velocity {deficit.get('Weekly_Sales_Rate', 'N/A')} units/week"
-                })
-                surplus['Surplus'] -= transfer_qty
-                deficit['Deficit'] -= transfer_qty
-                if deficit['Deficit'] <= 0:
-                    deficit_items.remove(deficit)
-            if surplus['Surplus'] <= 0:
-                break
+    all_skus_data = []
     
-    return pd.DataFrame(transfer_pairs) if transfer_pairs else pd.DataFrame()
+    # Get all unique SKUs from any branch
+    first_branch = next(iter(complete_inventory.values()))
+    if first_branch.empty:
+        return pd.DataFrame()
+    
+    all_skus = first_branch['SKU'].unique()
+    
+    for sku in all_skus:
+        # Check stock across all branches
+        total_stock = 0
+        sku_info = None
+        
+        for branch, df in complete_inventory.items():
+            sku_row = df[df['SKU'] == sku]
+            if not sku_row.empty:
+                quantity = sku_row['Quantity'].iloc[0]
+                total_stock += quantity
+                if sku_info is None:
+                    sku_info = {
+                        "Product": sku_row['Product'].iloc[0],
+                        "Colour": sku_row['Colour'].iloc[0],
+                        "Size": sku_row['Size'].iloc[0],
+                        "Article": sku_row['Article'].iloc[0],
+                        "MRP": sku_row['MRP'].iloc[0]
+                    }
+        
+        if total_stock == 0 and sku_info:
+            all_skus_data.append(sku_info)
+    
+    return pd.DataFrame(all_skus_data)
+
+def get_branch_transfers(transfers_df, branch_name, transfer_type="all"):
+    """Get transfers for a specific branch"""
+    if transfers_df.empty:
+        return pd.DataFrame()
+    
+    if transfer_type == "outgoing":
+        return transfers_df[transfers_df['From Branch'] == branch_name].copy()
+    elif transfer_type == "incoming":
+        return transfers_df[transfers_df['To Branch'] == branch_name].copy()
+    else:
+        outgoing = transfers_df[transfers_df['From Branch'] == branch_name].copy()
+        incoming = transfers_df[transfers_df['To Branch'] == branch_name].copy()
+        return pd.concat([outgoing, incoming]) if not outgoing.empty or not incoming.empty else pd.DataFrame()
 
 # ============================================
 # PDF GENERATION
 # ============================================
 
-def generate_transfer_pdf(transfers_df, title):
-    """Generate PDF for transfers"""
+def generate_branch_transfer_pdf(transfers_df, branch_name, branch_config):
+    """Generate PDF for branch-specific transfers"""
     
     if transfers_df.empty:
         return None
     
+    branch_name_clean = clean_text(branch_config['name'])
+    
     pdf = FPDF()
     pdf.add_page()
     
+    # Header
     pdf.set_font("Arial", 'B', 16)
-    pdf.cell(200, 10, f"PRAGATHI SHOES - {title}", ln=True, align='C')
+    pdf.cell(200, 10, "PRAGATHI SHOES - STOCK TRANSFER ORDER", ln=True, align='C')
+    pdf.set_font("Arial", 'B', 12)
+    pdf.cell(200, 10, f"Branch: {branch_name_clean}", ln=True, align='C')
     pdf.set_font("Arial", size=10)
     pdf.cell(200, 10, f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M')}", ln=True, align='C')
     pdf.ln(10)
     
-    pdf.set_font("Arial", 'B', 9)
-    pdf.cell(40, 10, "From", 1)
-    pdf.cell(40, 10, "To", 1)
-    pdf.cell(45, 10, "Product", 1)
-    pdf.cell(20, 10, "Size", 1)
-    pdf.cell(25, 10, "Qty", 1)
-    pdf.cell(30, 10, "Reason", 1)
-    pdf.ln()
+    # Separate outgoing and incoming
+    outgoing = transfers_df[transfers_df['From Branch'] == branch_name]
+    incoming = transfers_df[transfers_df['To Branch'] == branch_name]
     
-    pdf.set_font("Arial", size=8)
-    for _, row in transfers_df.iterrows():
-        pdf.cell(40, 8, clean_text(row['From Branch'])[:38], 1)
-        pdf.cell(40, 8, clean_text(row['To Branch'])[:38], 1)
-        pdf.cell(45, 8, clean_text(row['Product'])[:43], 1)
-        pdf.cell(20, 8, clean_text(row['Size'])[:18], 1)
-        pdf.cell(25, 8, str(int(row['Transfer Qty'])), 1)
-        pdf.cell(30, 8, clean_text(row['Reason'])[:28], 1)
+    if not outgoing.empty:
+        pdf.set_font("Arial", 'B', 11)
+        pdf.cell(200, 10, "STOCK TO SEND (SURPLUS)", ln=True)
+        pdf.ln(5)
+        
+        pdf.set_font("Arial", 'B', 9)
+        pdf.cell(40, 10, "Send To", 1)
+        pdf.cell(50, 10, "Product", 1)
+        pdf.cell(20, 10, "Size", 1)
+        pdf.cell(25, 10, "Colour", 1)
+        pdf.cell(30, 10, "Article", 1)
+        pdf.cell(20, 10, "MRP", 1)
+        pdf.cell(15, 10, "Qty", 1)
         pdf.ln()
+        
+        pdf.set_font("Arial", size=8)
+        for _, row in outgoing.iterrows():
+            pdf.cell(40, 8, clean_text(row['To Branch'])[:38], 1)
+            pdf.cell(50, 8, clean_text(row['Product'])[:48], 1)
+            pdf.cell(20, 8, clean_text(row['Size'])[:18], 1)
+            pdf.cell(25, 8, clean_text(row['Colour'])[:23], 1)
+            pdf.cell(30, 8, clean_text(row['Article'])[:28], 1)
+            pdf.cell(20, 8, clean_text(row['MRP'])[:18], 1)
+            pdf.cell(15, 8, str(int(row['Transfer Qty'])), 1)
+            pdf.ln()
+        pdf.ln(5)
+    
+    if not incoming.empty:
+        pdf.set_font("Arial", 'B', 11)
+        pdf.cell(200, 10, "STOCK TO RECEIVE (DEFICIT)", ln=True)
+        pdf.ln(5)
+        
+        pdf.set_font("Arial", 'B', 9)
+        pdf.cell(40, 10, "Receive From", 1)
+        pdf.cell(50, 10, "Product", 1)
+        pdf.cell(20, 10, "Size", 1)
+        pdf.cell(25, 10, "Colour", 1)
+        pdf.cell(30, 10, "Article", 1)
+        pdf.cell(20, 10, "MRP", 1)
+        pdf.cell(15, 10, "Qty", 1)
+        pdf.ln()
+        
+        pdf.set_font("Arial", size=8)
+        for _, row in incoming.iterrows():
+            pdf.cell(40, 8, clean_text(row['From Branch'])[:38], 1)
+            pdf.cell(50, 8, clean_text(row['Product'])[:48], 1)
+            pdf.cell(20, 8, clean_text(row['Size'])[:18], 1)
+            pdf.cell(25, 8, clean_text(row['Colour'])[:23], 1)
+            pdf.cell(30, 8, clean_text(row['Article'])[:28], 1)
+            pdf.cell(20, 8, clean_text(row['MRP'])[:18], 1)
+            pdf.cell(15, 8, str(int(row['Transfer Qty'])), 1)
+            pdf.ln()
+    
+    pdf.ln(5)
+    pdf.set_font("Arial", 'I', 9)
+    pdf.cell(200, 5, "Authorized Signatory: ____________________", ln=True)
+    pdf.cell(200, 5, "Warehouse Manager", ln=True)
     
     return pdf.output(dest='S').encode('latin-1', errors='ignore')
 
@@ -330,201 +361,322 @@ def generate_transfer_pdf(transfers_df, title):
 
 # Sidebar
 with st.sidebar:
-    st.header("⚙️ Configuration")
+    st.header("⚙️ Branch Configuration")
     
-    st.subheader("Safety Stock Levels")
-    safety_stock = st.number_input("Minimum Safety Stock (units)", value=6, min_value=1, max_value=20)
-    for branch in BRANCHES.keys():
+    st.subheader("Set Individual Branch Targets")
+    for branch in BRANCH_ORDER:
         if branch != "PRAGATHI SHOES":
-            BRANCHES[branch]["min"] = safety_stock
+            default = BRANCHES[branch]["target"]
+            BRANCHES[branch]["target"] = st.number_input(
+                f"{BRANCHES[branch]['name']}", 
+                value=default, 
+                min_value=1, 
+                max_value=50,
+                key=f"target_{branch}"
+            )
     
-    st.subheader("Sales Analysis Period")
-    sales_period = st.selectbox("Sales Data Period", ["Last 30 Days", "Last 60 Days", "Last 90 Days", "All Data"], index=0)
+    st.subheader("Warehouse Configuration")
+    BRANCHES["PRAGATHI SHOES"]["target"] = st.number_input(
+        "Central Warehouse", 
+        value=20, 
+        min_value=5, 
+        max_value=100,
+        key="target_warehouse"
+    )
     
     st.divider()
-    
-    st.subheader("📁 Upload Files")
-    stock_file = st.file_uploader("SCHOOL STOCK.csv", type=["csv"], key="stock")
-    sales_file = st.file_uploader("Sales Data File (CSV)", type=["csv"], key="sales")
+    uploaded_file = st.file_uploader("📁 Upload SCHOOL STOCK.csv", type=["csv"])
 
 # Main content
-if stock_file and sales_file:
-    with st.spinner("Analyzing stock and sales data..."):
-        # Process files
-        complete_inventory, all_skus = process_stock_file(stock_file)
-        sales_data, sales_meta = process_sales_file(sales_file)
+if uploaded_file:
+    with st.spinner("Analyzing inventory across all branches including warehouse..."):
+        complete_inventory, all_skus = process_inventory_file(uploaded_file)
         
         if complete_inventory is None:
-            st.error("Could not parse stock file. Please check the format.")
+            st.error("Could not parse the file. Please check the format.")
             st.stop()
         
-        if sales_data is None:
-            st.error("Could not parse sales file. Please check the format.")
-            st.stop()
+        # Calculate all transfers
+        transfers_df = calculate_all_transfers(complete_inventory, BRANCHES)
         
-        # Calculate transfers based on sales
-        transfers_df = calculate_sales_driven_transfers(complete_inventory, sales_data, BRANCHES)
+        # Get products with no stock anywhere
+        no_stock_anywhere = get_products_with_no_stock_anywhere(complete_inventory)
         
         # Create tabs
-        tab1, tab2, tab3, tab4 = st.tabs(["📊 Dashboard", "🚚 Smart Transfers", "📈 Sales Analytics", "🏪 Branch Details"])
+        tab_names = ["📊 Master Dashboard", "🚚 All Transfers", "⚠️ Zero Stock Anywhere"] + [f"🏪 {BRANCHES[b]['name']}" for b in BRANCH_ORDER]
+        tabs = st.tabs(tab_names)
         
         # ============================================
-        # TAB 1: DASHBOARD
+        # TAB 0: MASTER DASHBOARD
         # ============================================
-        with tab1:
-            st.subheader("🏢 Sales-Driven Inventory Dashboard")
+        with tabs[0]:
+            st.subheader("🏢 Complete Inventory Overview")
             
-            col1, col2, col3, col4 = st.columns(4)
+            # Summary metrics
+            col1, col2, col3, col4, col5 = st.columns(5)
             
-            total_stock = sum([df['Quantity'].sum() for df in complete_inventory.values()])
-            total_sales = sales_data['Sales_Qty'].sum() if not sales_data.empty else 0
+            total_stock = 0
+            total_skus = len(all_skus)
+            for branch, df in complete_inventory.items():
+                total_stock += df['Quantity'].sum()
+            
             total_transfers = len(transfers_df)
-            transfer_qty = transfers_df['Transfer Qty'].sum() if not transfers_df.empty else 0
+            total_transfer_qty = transfers_df['Transfer Qty'].sum() if not transfers_df.empty else 0
+            total_no_stock = len(no_stock_anywhere)
             
             with col1:
-                st.metric("Total Stock", f"{int(total_stock):,}")
+                st.metric("Total SKUs", total_skus)
             with col2:
-                st.metric("Total Sales (Period)", f"{int(total_sales):,}")
+                st.metric("Total Stock", f"{int(total_stock):,}")
             with col3:
                 st.metric("Suggested Transfers", total_transfers)
             with col4:
-                st.metric("Units to Transfer", int(transfer_qty))
+                st.metric("Units to Transfer", int(total_transfer_qty))
+            with col5:
+                st.metric("Zero Stock Anywhere", total_no_stock, delta="URGENT" if total_no_stock > 0 else None)
             
             st.markdown("---")
             
-            # Sales vs Stock comparison
-            st.subheader("📊 Sales vs Stock Comparison")
+            # Branch-wise stock summary
+            st.subheader("📊 Branch Stock Summary")
             
-            # Aggregate sales by product
-            top_products = sales_data.groupby('Product')['Sales_Qty'].sum().nlargest(10).reset_index()
-            st.dataframe(top_products, use_container_width=True)
+            branch_summary = []
+            for branch in BRANCH_ORDER:
+                df = complete_inventory[branch]
+                config = BRANCHES[branch]
+                
+                total_qty = df['Quantity'].sum()
+                target_total = config['target'] * len(df)
+                shortage = max(0, target_total - total_qty)
+                surplus = max(0, total_qty - target_total)
+                
+                zero_stock_skus = len(df[df['Quantity'] == 0])
+                low_stock_skus = len(df[(df['Quantity'] > 0) & (df['Quantity'] < config['min'])])
+                
+                branch_summary.append({
+                    "Branch": config['name'],
+                    "Total Stock": int(total_qty),
+                    "Target": int(target_total),
+                    "Shortage": int(shortage),
+                    "Surplus": int(surplus),
+                    "Zero Stock": zero_stock_skus,
+                    "Low Stock": low_stock_skus
+                })
+            
+            st.dataframe(pd.DataFrame(branch_summary), use_container_width=True)
         
         # ============================================
-        # TAB 2: SMART TRANSFERS
+        # TAB 1: ALL TRANSFERS
         # ============================================
-        with tab2:
-            st.subheader("🚚 Sales-Driven Transfer Recommendations")
-            st.markdown("**Transfers are based on sales velocity, not just arbitrary targets**")
+        with tabs[1]:
+            st.subheader("🚚 All Suggested Transfers (Ordered by Source Branch)")
             
             if not transfers_df.empty:
-                # Sort by priority (high demand deficit first)
-                transfers_df = transfers_df.sort_values('Transfer Qty', ascending=False)
+                sorted_transfers = transfers_df.sort_values(
+                    by=['From Branch', 'Product', 'Colour', 'Size', 'Article', 'MRP']
+                )
                 
-                st.dataframe(transfers_df, use_container_width=True)
+                display_cols = ['From Branch', 'To Branch', 'Product', 'Size', 'Colour', 'Article', 'MRP', 'Transfer Qty']
+                st.dataframe(sorted_transfers[display_cols], use_container_width=True)
                 
-                # Generate PDF
-                if st.button("📄 Generate Transfer Order PDF"):
-                    pdf_data = generate_transfer_pdf(transfers_df, "SALES_DRIVEN_TRANSFERS")
-                    if pdf_data:
-                        st.download_button("✅ Download PDF", pdf_data, f"smart_transfers_{datetime.now().strftime('%Y%m%d')}.pdf")
+                csv = sorted_transfers[display_cols].to_csv(index=False).encode('utf-8')
+                st.download_button("📥 Download All Transfers (CSV)", csv, f"all_transfers_{datetime.now().strftime('%Y%m%d')}.csv")
             else:
-                st.success("✅ No transfers needed based on current sales data!")
+                st.success("✅ No transfers needed!")
         
         # ============================================
-        # TAB 3: SALES ANALYTICS
+        # TAB 2: ZERO STOCK ANYWHERE
         # ============================================
-        with tab3:
-            st.subheader("📈 Sales Analytics")
+        with tabs[2]:
+            st.subheader("⚠️ Products with ZERO Stock Across ALL Branches")
+            st.markdown("**These products are completely out of stock in every branch including warehouse**")
             
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.markdown("**Top Selling Products**")
-                top_selling = sales_data.nlargest(10, 'Sales_Qty')[['Product', 'Sales_Qty']]
-                st.dataframe(top_selling, use_container_width=True)
-            
-            with col2:
-                st.markdown("**Sales by Branch**")
-                if 'Branch' in sales_data.columns:
-                    branch_sales = sales_data.groupby('Branch')['Sales_Qty'].sum().reset_index()
-                    st.dataframe(branch_sales, use_container_width=True)
-                else:
-                    st.info("Branch information not available in sales file")
-            
-            st.markdown("---")
-            
-            st.subheader("📊 Demand Forecasting")
-            st.markdown("**Products with high weekly sales velocity**")
-            
-            if 'Weekly_Sales_Rate' in sales_data.columns:
-                high_velocity = sales_data[sales_data['Weekly_Sales_Rate'] > 10].nlargest(10, 'Weekly_Sales_Rate')[['Product', 'Weekly_Sales_Rate', 'Sales_Qty']]
-                high_velocity.columns = ['Product', 'Weekly Demand', 'Total Sales']
-                st.dataframe(high_velocity, use_container_width=True)
-        
-        # ============================================
-        # TAB 4: BRANCH DETAILS
-        # ============================================
-        with tab4:
-            st.subheader("🏪 Branch-wise Analysis")
-            
-            selected_branch = st.selectbox("Select Branch", [BRANCHES[b]['name'] for b in BRANCH_ORDER if b != "PRAGATHI SHOES"])
-            
-            # Find branch key
-            branch_key = None
-            for b in BRANCH_ORDER:
-                if BRANCHES[b]['name'] == selected_branch:
-                    branch_key = b
-                    break
-            
-            if branch_key:
-                branch_df = complete_inventory[branch_key]
-                config = BRANCHES[branch_key]
+            if not no_stock_anywhere.empty:
+                st.error(f"🚨 {len(no_stock_anywhere)} products have ZERO stock anywhere!")
                 
-                col1, col2, col3 = st.columns(3)
+                # Add required quantity column (based on target for each branch)
+                no_stock_display = no_stock_anywhere.copy()
+                
+                # Calculate total required across all branches
+                required_qty = []
+                for _, row in no_stock_display.iterrows():
+                    total_needed = 0
+                    for branch in BRANCH_ORDER:
+                        if branch != "PRAGATHI SHOES":
+                            total_needed += BRANCHES[branch]["target"]
+                    required_qty.append(total_needed)
+                
+                no_stock_display['Required Quantity (All Branches)'] = required_qty
+                no_stock_display['Urgency'] = 'HIGH - Complete Out of Stock'
+                
+                st.dataframe(no_stock_display, use_container_width=True)
+                
+                # Export
+                csv = no_stock_display.to_csv(index=False).encode('utf-8')
+                st.download_button("📥 Download Zero Stock Report", csv, f"zero_stock_anywhere_{datetime.now().strftime('%Y%m%d')}.csv")
+                
+                # Show which branches need these items
+                st.subheader("🏪 Branches That Need These Products")
+                for _, row in no_stock_display.iterrows():
+                    with st.expander(f"{row['Product']} - Size {row['Size']} - {row['Colour']}"):
+                        needs_info = []
+                        for branch in BRANCH_ORDER:
+                            if branch != "PRAGATHI SHOES":
+                                needs_info.append({
+                                    "Branch": BRANCHES[branch]['name'],
+                                    "Target": BRANCHES[branch]["target"],
+                                    "Current": 0,
+                                    "Required": BRANCHES[branch]["target"]
+                                })
+                        st.dataframe(pd.DataFrame(needs_info), use_container_width=True)
+            else:
+                st.success("✅ All products have stock in at least one branch!")
+        
+        # ============================================
+        # BRANCH-SPECIFIC TABS
+        # ============================================
+        for idx, branch in enumerate(BRANCH_ORDER):
+            with tabs[idx + 3]:
+                config = BRANCHES[branch]
+                branch_df = complete_inventory[branch]
+                
+                st.subheader(f"🏪 {config['name']} - Complete Stock Analysis")
+                
+                # Metrics row
+                col1, col2, col3, col4, col5 = st.columns(5)
+                total_stock = int(branch_df['Quantity'].sum())
+                sku_count = len(branch_df)
+                zero_count = len(branch_df[branch_df['Quantity'] == 0])
+                low_count = len(branch_df[(branch_df['Quantity'] > 0) & (branch_df['Quantity'] < config['min'])])
+                surplus_count = len(branch_df[branch_df['Quantity'] > config['target']])
+                
                 with col1:
-                    st.metric("Current Stock", int(branch_df['Quantity'].sum()))
+                    st.metric("Total Stock", total_stock)
                 with col2:
-                    st.metric("SKUs", len(branch_df))
+                    st.metric("Total SKUs", sku_count)
                 with col3:
-                    zero_count = len(branch_df[branch_df['Quantity'] == 0])
-                    st.metric("Zero Stock SKUs", zero_count)
+                    st.metric("Zero Stock", zero_count, delta="URGENT" if zero_count > 0 else None)
+                with col4:
+                    st.metric("Low Stock", low_count, delta="Needs attention" if low_count > 0 else None)
+                with col5:
+                    st.metric("Surplus", surplus_count, delta="Can share" if surplus_count > 0 else None)
                 
                 st.markdown("---")
                 
-                # Show inventory
-                st.subheader("Current Inventory")
+                # TABLE 1: Zero Stock Items (Quantity = 0)
+                st.subheader("📋 TABLE 1: ZERO STOCK ITEMS")
+                zero_stock = branch_df[branch_df['Quantity'] == 0]
+                if not zero_stock.empty:
+                    st.warning(f"⚠️ {len(zero_stock)} items have ZERO stock!")
+                    zero_display = zero_stock[['Product', 'Colour', 'Size', 'Article', 'MRP', 'Quantity']].copy()
+                    zero_display['Required'] = config['target']
+                    st.dataframe(zero_display, use_container_width=True)
+                else:
+                    st.success("✅ No zero stock items in this branch!")
+                
+                st.markdown("---")
+                
+                # TABLE 2: Low Stock Items (0 < Quantity < min)
+                st.subheader("📋 TABLE 2: LOW STOCK ITEMS")
+                low_stock = branch_df[(branch_df['Quantity'] > 0) & (branch_df['Quantity'] < config['min'])]
+                if not low_stock.empty:
+                    st.warning(f"⚠️ {len(low_stock)} items have LOW stock (below {config['min']} units)!")
+                    low_display = low_stock[['Product', 'Colour', 'Size', 'Article', 'MRP', 'Quantity']].copy()
+                    low_display['Current'] = low_display['Quantity']
+                    low_display['Minimum Required'] = config['min']
+                    low_display['Target'] = config['target']
+                    low_display['Additional Needed'] = config['target'] - low_display['Quantity']
+                    st.dataframe(low_display, use_container_width=True)
+                else:
+                    st.success(f"✅ No low stock items (all above {config['min']} units)!")
+                
+                st.markdown("---")
+                
+                # TABLE 3: Complete Inventory
+                st.subheader("📋 TABLE 3: COMPLETE INVENTORY")
                 display_df = branch_df[['Product', 'Colour', 'Size', 'Article', 'MRP', 'Quantity']].copy()
-                display_df = display_df.sort_values(['Product', 'Size'])
+                display_df['Status'] = display_df['Quantity'].apply(
+                    lambda x: '🔴 ZERO' if x == 0 else ('🟡 LOW' if x < config['min'] else ('🟢 OK' if x <= config['target'] else '📤 SURPLUS'))
+                )
+                display_df = display_df.sort_values(['Product', 'Colour', 'Size', 'Article'])
                 st.dataframe(display_df, use_container_width=True)
+                
+                st.markdown("---")
+                
+                # Show transfers for this branch
+                outgoing = transfers_df[transfers_df['From Branch'] == branch] if not transfers_df.empty else pd.DataFrame()
+                incoming = transfers_df[transfers_df['To Branch'] == branch] if not transfers_df.empty else pd.DataFrame()
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.subheader("📤 STOCK TO SEND (Surplus)")
+                    if not outgoing.empty:
+                        outgoing_display = outgoing.sort_values(['Product', 'Colour', 'Size', 'Article'])[
+                            ['To Branch', 'Product', 'Size', 'Colour', 'Article', 'MRP', 'Transfer Qty']
+                        ]
+                        st.dataframe(outgoing_display, use_container_width=True)
+                    else:
+                        st.info("No surplus to send")
+                
+                with col2:
+                    st.subheader("📥 STOCK TO RECEIVE (Deficit)")
+                    if not incoming.empty:
+                        incoming_display = incoming.sort_values(['Product', 'Colour', 'Size', 'Article'])[
+                            ['From Branch', 'Product', 'Size', 'Colour', 'Article', 'MRP', 'Transfer Qty']
+                        ]
+                        st.dataframe(incoming_display, use_container_width=True)
+                    else:
+                        st.info("No incoming transfers needed")
+                
+                # Generate PDF
+                branch_all_transfers = get_branch_transfers(transfers_df, branch, "all")
+                if not branch_all_transfers.empty:
+                    st.markdown("---")
+                    if st.button(f"📄 Generate Transfer Order PDF", key=f"pdf_{branch}"):
+                        branch_pdf = generate_branch_transfer_pdf(branch_all_transfers, branch, config)
+                        if branch_pdf:
+                            st.download_button(
+                                "✅ Download PDF", 
+                                branch_pdf, 
+                                f"{branch.replace(' ', '_')}_transfer_order_{datetime.now().strftime('%Y%m%d')}.pdf"
+                            )
 
 else:
-    st.info("👈 **Upload both files: SCHOOL STOCK.csv AND Sales Data CSV**")
+    # Instructions
+    st.info("👈 **Upload your SCHOOL STOCK.csv file using the sidebar**")
     
     st.markdown("""
-    ## 📦 Sales-Driven Stock Transfer System
+    ## 📦 Complete Stock Transfer System
     
-    ### How It Works:
-    
-    1. **Upload Stock File** - Your SCHOOL STOCK.csv
-    2. **Upload Sales File** - Any CSV with sales data
-    3. **System Analyzes** - Combines stock + sales data
-    4. **Smart Transfers** - Based on actual demand, not arbitrary targets
-    
-    ### Sales File Format:
-    
-    The system automatically detects these columns:
-    - **Product/Item/SKU** - Product identifier
-    - **Quantity/Qty/Sold** - Number of units sold
-    - **Branch/Store** (optional) - Branch name
-    - **Date** (optional) - For velocity calculation
-    
-    ### Key Features:
+    ### Features Included:
     
     | Feature | Description |
     |---------|-------------|
-    | **Demand-Based Targets** | Targets adjust based on sales velocity |
-    | **Sales Velocity** | Calculates daily/weekly/monthly sales rates |
-    | **Smart Transfer Logic** | Stock moves to high-demand branches |
-    | **Zero Stock Detection** | Identifies complete stockouts |
-    | **PDF Generation** | Professional transfer orders |
+    | **Zero Stock Table** | Shows items with 0 quantity in each branch |
+    | **Low Stock Table** | Shows items below minimum threshold |
+    | **Zero Stock Anywhere** | Products completely out of stock across all branches |
+    | **Required Quantity** | Calculates how many units needed |
+    | **Branch-wise Transfers** | All transfers grouped by source branch |
+    | **Complete Details** | Shows Product, Size, Colour, Article, MRP |
+    | **PDF Generation** | Branch-specific transfer orders |
     
-    ### The Intelligence:
+    ### Branch Tabs Include 3 Tables:
     
-    - **Fast-moving products** get higher stock targets
-    - **Slow-moving products** get lower targets
-    - **Branches with high sales** receive priority
-    - **Branches with low sales** send surplus
+    1. **TABLE 1: ZERO STOCK ITEMS** - Items with 0 quantity
+    2. **TABLE 2: LOW STOCK ITEMS** - Items below minimum threshold  
+    3. **TABLE 3: COMPLETE INVENTORY** - All items with status
+    
+    ### Global Zero Stock Tab:
+    - Shows products with ZERO stock in ALL branches
+    - Calculates total required quantity
+    - Shows which branches need these products
+    
+    ### Transfer Logic:
+    - Surplus branches (stock > target) send to deficit branches (stock < target)
+    - Warehouse included in transfers
+    - Exact SKU matching (Product + Colour + Size + Article + MRP)
     """)
 
 st.sidebar.markdown("---")
-st.sidebar.caption("v6.0 | Sales-Driven Intelligent Distribution")
+st.sidebar.caption("v5.0 | Complete System with Zero Stock Tracking & Multiple Tables")
