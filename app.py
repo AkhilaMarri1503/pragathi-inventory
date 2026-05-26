@@ -23,7 +23,6 @@ BRANCHES = {
     "PRAGATHI SHOES": {"target": 20, "min": 10, "name": "Central Warehouse", "order": 6}
 }
 
-# Order of branches for display
 BRANCH_ORDER = ["POPULAR SHOE COMPANY", "PRAGATHI SHOES AMD 2", "PRAGATHI SHOES RAGOLU", 
                 "PRAGATHI SHOES BALAGA", "PRAGATHI SHOES AKP", "PRAGATHI SHOES"]
 
@@ -218,6 +217,42 @@ def calculate_all_transfers(complete_inventory, branches_config):
     
     return pd.DataFrame(all_transfers) if all_transfers else pd.DataFrame()
 
+def get_products_with_no_stock_anywhere(complete_inventory):
+    """Find products that have zero stock in ALL branches"""
+    
+    all_skus_data = []
+    
+    # Get all unique SKUs from any branch
+    first_branch = next(iter(complete_inventory.values()))
+    if first_branch.empty:
+        return pd.DataFrame()
+    
+    all_skus = first_branch['SKU'].unique()
+    
+    for sku in all_skus:
+        # Check stock across all branches
+        total_stock = 0
+        sku_info = None
+        
+        for branch, df in complete_inventory.items():
+            sku_row = df[df['SKU'] == sku]
+            if not sku_row.empty:
+                quantity = sku_row['Quantity'].iloc[0]
+                total_stock += quantity
+                if sku_info is None:
+                    sku_info = {
+                        "Product": sku_row['Product'].iloc[0],
+                        "Colour": sku_row['Colour'].iloc[0],
+                        "Size": sku_row['Size'].iloc[0],
+                        "Article": sku_row['Article'].iloc[0],
+                        "MRP": sku_row['MRP'].iloc[0]
+                    }
+        
+        if total_stock == 0 and sku_info:
+            all_skus_data.append(sku_info)
+    
+    return pd.DataFrame(all_skus_data)
+
 def get_branch_transfers(transfers_df, branch_name, transfer_type="all"):
     """Get transfers for a specific branch"""
     if transfers_df.empty:
@@ -364,8 +399,11 @@ if uploaded_file:
         # Calculate all transfers
         transfers_df = calculate_all_transfers(complete_inventory, BRANCHES)
         
+        # Get products with no stock anywhere
+        no_stock_anywhere = get_products_with_no_stock_anywhere(complete_inventory)
+        
         # Create tabs
-        tab_names = ["📊 Master Dashboard", "🚚 All Transfers (Branch Wise)"] + [f"🏪 {BRANCHES[b]['name']}" for b in BRANCH_ORDER]
+        tab_names = ["📊 Master Dashboard", "🚚 All Transfers", "⚠️ Zero Stock Anywhere"] + [f"🏪 {BRANCHES[b]['name']}" for b in BRANCH_ORDER]
         tabs = st.tabs(tab_names)
         
         # ============================================
@@ -375,7 +413,7 @@ if uploaded_file:
             st.subheader("🏢 Complete Inventory Overview")
             
             # Summary metrics
-            col1, col2, col3, col4 = st.columns(4)
+            col1, col2, col3, col4, col5 = st.columns(5)
             
             total_stock = 0
             total_skus = len(all_skus)
@@ -384,6 +422,7 @@ if uploaded_file:
             
             total_transfers = len(transfers_df)
             total_transfer_qty = transfers_df['Transfer Qty'].sum() if not transfers_df.empty else 0
+            total_no_stock = len(no_stock_anywhere)
             
             with col1:
                 st.metric("Total SKUs", total_skus)
@@ -393,11 +432,13 @@ if uploaded_file:
                 st.metric("Suggested Transfers", total_transfers)
             with col4:
                 st.metric("Units to Transfer", int(total_transfer_qty))
+            with col5:
+                st.metric("Zero Stock Anywhere", total_no_stock, delta="URGENT" if total_no_stock > 0 else None)
             
             st.markdown("---")
             
-            # Branch-wise stock summary with shortages
-            st.subheader("📊 Branch Stock Summary (with Shortages)")
+            # Branch-wise stock summary
+            st.subheader("📊 Branch Stock Summary")
             
             branch_summary = []
             for branch in BRANCH_ORDER:
@@ -409,9 +450,8 @@ if uploaded_file:
                 shortage = max(0, target_total - total_qty)
                 surplus = max(0, total_qty - target_total)
                 
-                # Count SKUs with zero stock
                 zero_stock_skus = len(df[df['Quantity'] == 0])
-                skus_needed = len(df[df['Quantity'] < config['min']])
+                low_stock_skus = len(df[(df['Quantity'] > 0) & (df['Quantity'] < config['min'])])
                 
                 branch_summary.append({
                     "Branch": config['name'],
@@ -419,85 +459,141 @@ if uploaded_file:
                     "Target": int(target_total),
                     "Shortage": int(shortage),
                     "Surplus": int(surplus),
-                    "Zero Stock SKUs": zero_stock_skus,
-                    "SKUs Needing Stock": skus_needed,
-                    "Total SKUs": len(df)
+                    "Zero Stock": zero_stock_skus,
+                    "Low Stock": low_stock_skus
                 })
             
             st.dataframe(pd.DataFrame(branch_summary), use_container_width=True)
-            
-            # Show branches with zero stock items
-            st.subheader("⚠️ Branches with Zero Stock Items")
-            for branch in BRANCH_ORDER:
-                df = complete_inventory[branch]
-                zero_items = df[df['Quantity'] == 0]
-                if not zero_items.empty:
-                    with st.expander(f"{BRANCHES[branch]['name']} - {len(zero_items)} items out of stock"):
-                        st.dataframe(zero_items[['Product', 'Size', 'Colour', 'Article', 'MRP']], use_container_width=True)
         
         # ============================================
-        # TAB 1: ALL TRANSFERS (BRANCH WISE ORDERED)
+        # TAB 1: ALL TRANSFERS
         # ============================================
         with tabs[1]:
             st.subheader("🚚 All Suggested Transfers (Ordered by Source Branch)")
             
             if not transfers_df.empty:
-                # Sort transfers by From Branch, then Product, Colour, Size, Article, MRP
                 sorted_transfers = transfers_df.sort_values(
                     by=['From Branch', 'Product', 'Colour', 'Size', 'Article', 'MRP']
                 )
                 
-                # Display with all required columns
                 display_cols = ['From Branch', 'To Branch', 'Product', 'Size', 'Colour', 'Article', 'MRP', 'Transfer Qty']
                 st.dataframe(sorted_transfers[display_cols], use_container_width=True)
                 
-                # Download all transfers
                 csv = sorted_transfers[display_cols].to_csv(index=False).encode('utf-8')
                 st.download_button("📥 Download All Transfers (CSV)", csv, f"all_transfers_{datetime.now().strftime('%Y%m%d')}.csv")
-                
-                # Group by source branch for better visualization
-                st.subheader("📦 Transfers Grouped by Source Branch")
-                for branch in BRANCH_ORDER:
-                    branch_outgoing = transfers_df[transfers_df['From Branch'] == branch]
-                    if not branch_outgoing.empty:
-                        with st.expander(f"📤 From: {BRANCHES[branch]['name']} ({len(branch_outgoing)} items)"):
-                            display_out = branch_outgoing.sort_values(['Product', 'Colour', 'Size', 'Article'])[
-                                ['To Branch', 'Product', 'Size', 'Colour', 'Article', 'MRP', 'Transfer Qty']
-                            ]
-                            st.dataframe(display_out, use_container_width=True)
             else:
-                st.success("✅ No transfers needed! All branches are optimally stocked.")
+                st.success("✅ No transfers needed!")
+        
+        # ============================================
+        # TAB 2: ZERO STOCK ANYWHERE
+        # ============================================
+        with tabs[2]:
+            st.subheader("⚠️ Products with ZERO Stock Across ALL Branches")
+            st.markdown("**These products are completely out of stock in every branch including warehouse**")
+            
+            if not no_stock_anywhere.empty:
+                st.error(f"🚨 {len(no_stock_anywhere)} products have ZERO stock anywhere!")
+                
+                # Add required quantity column (based on target for each branch)
+                no_stock_display = no_stock_anywhere.copy()
+                
+                # Calculate total required across all branches
+                required_qty = []
+                for _, row in no_stock_display.iterrows():
+                    total_needed = 0
+                    for branch in BRANCH_ORDER:
+                        if branch != "PRAGATHI SHOES":
+                            total_needed += BRANCHES[branch]["target"]
+                    required_qty.append(total_needed)
+                
+                no_stock_display['Required Quantity (All Branches)'] = required_qty
+                no_stock_display['Urgency'] = 'HIGH - Complete Out of Stock'
+                
+                st.dataframe(no_stock_display, use_container_width=True)
+                
+                # Export
+                csv = no_stock_display.to_csv(index=False).encode('utf-8')
+                st.download_button("📥 Download Zero Stock Report", csv, f"zero_stock_anywhere_{datetime.now().strftime('%Y%m%d')}.csv")
+                
+                # Show which branches need these items
+                st.subheader("🏪 Branches That Need These Products")
+                for _, row in no_stock_display.iterrows():
+                    with st.expander(f"{row['Product']} - Size {row['Size']} - {row['Colour']}"):
+                        needs_info = []
+                        for branch in BRANCH_ORDER:
+                            if branch != "PRAGATHI SHOES":
+                                needs_info.append({
+                                    "Branch": BRANCHES[branch]['name'],
+                                    "Target": BRANCHES[branch]["target"],
+                                    "Current": 0,
+                                    "Required": BRANCHES[branch]["target"]
+                                })
+                        st.dataframe(pd.DataFrame(needs_info), use_container_width=True)
+            else:
+                st.success("✅ All products have stock in at least one branch!")
         
         # ============================================
         # BRANCH-SPECIFIC TABS
         # ============================================
         for idx, branch in enumerate(BRANCH_ORDER):
-            with tabs[idx + 2]:
+            with tabs[idx + 3]:
                 config = BRANCHES[branch]
                 branch_df = complete_inventory[branch]
                 
                 st.subheader(f"🏪 {config['name']} - Complete Stock Analysis")
                 
-                # Metrics
-                col1, col2, col3, col4 = st.columns(4)
+                # Metrics row
+                col1, col2, col3, col4, col5 = st.columns(5)
                 total_stock = int(branch_df['Quantity'].sum())
                 sku_count = len(branch_df)
                 zero_count = len(branch_df[branch_df['Quantity'] == 0])
                 low_count = len(branch_df[(branch_df['Quantity'] > 0) & (branch_df['Quantity'] < config['min'])])
+                surplus_count = len(branch_df[branch_df['Quantity'] > config['target']])
                 
                 with col1:
                     st.metric("Total Stock", total_stock)
                 with col2:
-                    st.metric("SKUs Carried", sku_count)
+                    st.metric("Total SKUs", sku_count)
                 with col3:
-                    st.metric("Zero Stock SKUs", zero_count, delta="Need stock" if zero_count > 0 else None)
+                    st.metric("Zero Stock", zero_count, delta="URGENT" if zero_count > 0 else None)
                 with col4:
-                    st.metric("Low Stock SKUs", low_count, delta="Need replenishment" if low_count > 0 else None)
+                    st.metric("Low Stock", low_count, delta="Needs attention" if low_count > 0 else None)
+                with col5:
+                    st.metric("Surplus", surplus_count, delta="Can share" if surplus_count > 0 else None)
                 
                 st.markdown("---")
                 
-                # Show complete inventory with status
-                st.subheader("📋 Complete Inventory (Including Zero Stock)")
+                # TABLE 1: Zero Stock Items (Quantity = 0)
+                st.subheader("📋 TABLE 1: ZERO STOCK ITEMS")
+                zero_stock = branch_df[branch_df['Quantity'] == 0]
+                if not zero_stock.empty:
+                    st.warning(f"⚠️ {len(zero_stock)} items have ZERO stock!")
+                    zero_display = zero_stock[['Product', 'Colour', 'Size', 'Article', 'MRP', 'Quantity']].copy()
+                    zero_display['Required'] = config['target']
+                    st.dataframe(zero_display, use_container_width=True)
+                else:
+                    st.success("✅ No zero stock items in this branch!")
+                
+                st.markdown("---")
+                
+                # TABLE 2: Low Stock Items (0 < Quantity < min)
+                st.subheader("📋 TABLE 2: LOW STOCK ITEMS")
+                low_stock = branch_df[(branch_df['Quantity'] > 0) & (branch_df['Quantity'] < config['min'])]
+                if not low_stock.empty:
+                    st.warning(f"⚠️ {len(low_stock)} items have LOW stock (below {config['min']} units)!")
+                    low_display = low_stock[['Product', 'Colour', 'Size', 'Article', 'MRP', 'Quantity']].copy()
+                    low_display['Current'] = low_display['Quantity']
+                    low_display['Minimum Required'] = config['min']
+                    low_display['Target'] = config['target']
+                    low_display['Additional Needed'] = config['target'] - low_display['Quantity']
+                    st.dataframe(low_display, use_container_width=True)
+                else:
+                    st.success(f"✅ No low stock items (all above {config['min']} units)!")
+                
+                st.markdown("---")
+                
+                # TABLE 3: Complete Inventory
+                st.subheader("📋 TABLE 3: COMPLETE INVENTORY")
                 display_df = branch_df[['Product', 'Colour', 'Size', 'Article', 'MRP', 'Quantity']].copy()
                 display_df['Status'] = display_df['Quantity'].apply(
                     lambda x: '🔴 ZERO' if x == 0 else ('🟡 LOW' if x < config['min'] else ('🟢 OK' if x <= config['target'] else '📤 SURPLUS'))
@@ -505,13 +601,7 @@ if uploaded_file:
                 display_df = display_df.sort_values(['Product', 'Colour', 'Size', 'Article'])
                 st.dataframe(display_df, use_container_width=True)
                 
-                # Show items needing stock (zero or low)
-                needs_stock = branch_df[(branch_df['Quantity'] == 0) | (branch_df['Quantity'] < config['min'])]
-                if not needs_stock.empty:
-                    st.subheader("⚠️ Items Needing Stock")
-                    needs_display = needs_stock[['Product', 'Size', 'Colour', 'Article', 'MRP', 'Quantity']].copy()
-                    needs_display['Required'] = needs_display['Quantity'].apply(lambda x: config['target'] - x)
-                    st.dataframe(needs_display, use_container_width=True)
+                st.markdown("---")
                 
                 # Show transfers for this branch
                 outgoing = transfers_df[transfers_df['From Branch'] == branch] if not transfers_df.empty else pd.DataFrame()
@@ -520,7 +610,7 @@ if uploaded_file:
                 col1, col2 = st.columns(2)
                 
                 with col1:
-                    st.markdown("**📤 STOCK TO SEND (Surplus)**")
+                    st.subheader("📤 STOCK TO SEND (Surplus)")
                     if not outgoing.empty:
                         outgoing_display = outgoing.sort_values(['Product', 'Colour', 'Size', 'Article'])[
                             ['To Branch', 'Product', 'Size', 'Colour', 'Article', 'MRP', 'Transfer Qty']
@@ -530,7 +620,7 @@ if uploaded_file:
                         st.info("No surplus to send")
                 
                 with col2:
-                    st.markdown("**📥 STOCK TO RECEIVE (Deficit)**")
+                    st.subheader("📥 STOCK TO RECEIVE (Deficit)")
                     if not incoming.empty:
                         incoming_display = incoming.sort_values(['Product', 'Colour', 'Size', 'Article'])[
                             ['From Branch', 'Product', 'Size', 'Colour', 'Article', 'MRP', 'Transfer Qty']
@@ -563,29 +653,30 @@ else:
     
     | Feature | Description |
     |---------|-------------|
-    | **Zero Stock Tracking** | SKUs with 0 stock are shown as needing stock |
+    | **Zero Stock Table** | Shows items with 0 quantity in each branch |
+    | **Low Stock Table** | Shows items below minimum threshold |
+    | **Zero Stock Anywhere** | Products completely out of stock across all branches |
+    | **Required Quantity** | Calculates how many units needed |
     | **Branch-wise Transfers** | All transfers grouped by source branch |
-    | **Ordered Display** | Sorted by Product, Colour, Size, Article, MRP |
-    | **Warehouse Included** | Warehouse can send/receive transfers |
-    | **Complete Details** | Shows Article No., MRP, Size, Colour |
+    | **Complete Details** | Shows Product, Size, Colour, Article, MRP |
     | **PDF Generation** | Branch-specific transfer orders |
     
-    ### How It Works:
+    ### Branch Tabs Include 3 Tables:
     
-    1. **Upload CSV** - System reads all branches including warehouse
-    2. **Set Targets** - Configure individual branch targets in sidebar
-    3. **Auto Analysis** - Identifies surplus and deficit branches
-    4. **Zero Stock Detection** - SKUs with 0 stock are flagged
-    5. **Smart Matching** - Surplus matched to deficit by exact SKU
-    6. **Ordered Output** - All transfers sorted by branch and product details
+    1. **TABLE 1: ZERO STOCK ITEMS** - Items with 0 quantity
+    2. **TABLE 2: LOW STOCK ITEMS** - Items below minimum threshold  
+    3. **TABLE 3: COMPLETE INVENTORY** - All items with status
+    
+    ### Global Zero Stock Tab:
+    - Shows products with ZERO stock in ALL branches
+    - Calculates total required quantity
+    - Shows which branches need these products
     
     ### Transfer Logic:
-    - Every SKU is tracked across ALL branches
-    - Branches with stock > target = SURPLUS (send out)
-    - Branches with stock < target = DEFICIT (receive)
-    - Warehouse can both send and receive
-    - Zero stock SKUs are prioritized for receiving
+    - Surplus branches (stock > target) send to deficit branches (stock < target)
+    - Warehouse included in transfers
+    - Exact SKU matching (Product + Colour + Size + Article + MRP)
     """)
 
 st.sidebar.markdown("---")
-st.sidebar.caption("v4.0 | Complete Transfer System with Zero Stock Tracking")
+st.sidebar.caption("v5.0 | Complete System with Zero Stock Tracking & Multiple Tables")
