@@ -21,17 +21,17 @@ BRANCHES = {
     "PRAGATHI SHOES RAGOLU": {"target": 8, "min": 4, "name": "Ragolu Store"},
     "PRAGATHI SHOES BALAGA": {"target": 8, "min": 4, "name": "Balaga Store"},
     "PRAGATHI SHOES AKP": {"target": 8, "min": 4, "name": "AKP Store"},
-    "PRAGATHI SHOES": {"target": 20, "min": 10, "name": "Central Warehouse"}  # Warehouse
+    "PRAGATHI SHOES": {"target": 20, "min": 10, "name": "Central Warehouse"}
 }
 
 # Color code for stock status
 def get_status_color(stock, target, min_level):
     if stock >= target:
-        return "🟢"  # Good - can share
+        return "🟢"
     elif stock >= min_level:
-        return "🟡"  # Adequate
+        return "🟡"
     else:
-        return "🔴"  # Needs stock
+        return "🔴"
 
 # ============================================
 # DATA PROCESSING
@@ -130,7 +130,7 @@ def calculate_transfers(branch_inventory, branches_config):
         # Identify surplus branches (stock > target)
         surplus_branches = []
         for branch, stock in branch_stock.items():
-            if branch != "PRAGATHI SHOES":  # Don't take from warehouse automatically
+            if branch != "PRAGATHI SHOES":
                 target = branches_config[branch]["target"]
                 if stock > target:
                     surplus = stock - target
@@ -218,8 +218,8 @@ def generate_transfer_pdf(transfers_df, branch_name):
     pdf.cell(40, 10, "Article", 1)
     pdf.ln()
     
-    # Table data
-    pdf.set_font("Arial", size(8))
+    # Table data - FIXED: changed size(8) to size=8
+    pdf.set_font("Arial", size=8)
     for _, row in transfers_df.iterrows():
         pdf.cell(25, 8, f"{row['From Branch']} → {row['To Branch']}", 1)
         pdf.cell(25, 8, str(row['Size'])[:23], 1)
@@ -353,7 +353,6 @@ if uploaded_file:
                 with col2:
                     st.metric("SKUs Carried", len(branch_df))
                 with col3:
-                    # Calculate surplus/deficit
                     target_total = config['target'] * len(branch_df)
                     if branch_df['Quantity'].sum() > target_total:
                         st.metric("Status", "🟢 Surplus", delta=f"+{int(branch_df['Quantity'].sum() - target_total)}")
@@ -373,9 +372,7 @@ if uploaded_file:
                 # Show transfers involving this branch
                 st.subheader("🚚 Suggested Transfers")
                 
-                # Transfers where this branch is SOURCE (sending out surplus)
                 outgoing = transfers_df[transfers_df['From Branch'] == branch] if not transfers_df.empty else pd.DataFrame()
-                # Transfers where this branch is DESTINATION (receiving stock)
                 incoming = transfers_df[transfers_df['To Branch'] == branch] if not transfers_df.empty else pd.DataFrame()
                 
                 col1, col2 = st.columns(2)
@@ -414,18 +411,16 @@ if uploaded_file:
                                 f"{branch.replace(' ', '_')}_transfers_{datetime.now().strftime('%Y%m%d')}.pdf"
                             )
                 
-                # Manual transfer suggestion for specific SKUs
+                # Manual transfer suggestion
                 st.markdown("---")
                 st.subheader("🔍 Check Specific Product")
                 
-                # Get unique products from this branch
                 products = branch_df['Product'].unique().tolist()
                 selected_product = st.selectbox("Select Product", products, key=f"product_{branch}")
                 
                 if selected_product:
                     product_data = branch_df[branch_df['Product'] == selected_product]
                     
-                    # Show sizes available
                     st.markdown("**Size-wise stock in this branch:**")
                     size_data = product_data[['Size', 'Colour', 'Quantity', 'Article', 'MRP']].copy()
                     size_data['Status'] = size_data['Quantity'].apply(
@@ -433,18 +428,15 @@ if uploaded_file:
                     )
                     st.dataframe(size_data, use_container_width=True)
                     
-                    # Suggest transfer for selected size
                     sizes = product_data['Size'].unique().tolist()
                     selected_size = st.selectbox("Select Size", sizes, key=f"size_{branch}")
                     
                     if selected_size:
                         size_stock = product_data[product_data['Size'] == selected_size]['Quantity'].iloc[0]
-                        stock_status = "surplus" if size_stock > config['target'] else ("deficit" if size_stock < config['min'] else "adequate")
                         
-                        if stock_status == "surplus":
+                        if size_stock > config['target']:
                             st.success(f"✅ This branch has {int(size_stock)} units (surplus of {int(size_stock - config['target'])} units)")
                             
-                            # Find which branches need this product
                             need_branches = []
                             for other_branch, other_config in BRANCHES.items():
                                 if other_branch != branch and other_branch != "PRAGATHI SHOES":
@@ -468,10 +460,9 @@ if uploaded_file:
                             else:
                                 st.info("No other branches need this size")
                         
-                        elif stock_status == "deficit":
+                        elif size_stock < config['min']:
                             st.warning(f"⚠️ This branch has {int(size_stock)} units (needs {int(config['target'] - size_stock)} more units)")
                             
-                            # Find which branches have surplus
                             source_branches = []
                             for other_branch, other_config in BRANCHES.items():
                                 if other_branch != branch:
@@ -523,19 +514,6 @@ else:
     | 📊 Size-wise Analysis | Check specific sizes across branches |
     | 📄 PDF Transfer Orders | Generate official transfer documents |
     | 🏪 Branch Tabs | Dedicated view for each branch |
-    
-    ### Transfer Logic:
-    - Identifies branches with stock **above target** (surplus)
-    - Identifies branches with stock **below target** (deficit)
-    - Matches **exact SKU** (same Product, Colour, Size, Article, MRP)
-    - Suggests optimal transfer quantities
-    - Generates branch-wise transfer reports
-    
-    ### Customize Targets:
-    Use the sidebar to set different targets for each branch:
-    - **Popular Store** (High volume) - Target: 12 units
-    - **Other Stores** (Regular) - Target: 6-8 units
-    - Adjust as needed!
     """)
 
 st.sidebar.markdown("---")
