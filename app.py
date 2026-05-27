@@ -4,6 +4,8 @@ import numpy as np
 from fpdf import FPDF
 from datetime import datetime
 import re
+import csv
+import io
 
 st.set_page_config(page_title="Pragathi Shoes - Complete Transfer System", layout="wide")
 
@@ -44,72 +46,91 @@ def get_brand(product):
         return "Pragathi"
 
 # ============================================
-# ROBUST CSV PARSING (FIXED)
+# ROBUST CSV PARSING USING csv.reader
 # ============================================
 
 def process_inventory_file(uploaded_file):
-    """Parse SCHOOL STOCK.csv robustly, handling variable column counts."""
+    """Parse SCHOOL STOCK.csv robustly using csv.reader."""
     try:
         content = uploaded_file.getvalue().decode('utf-8')
-        lines = content.splitlines()
-        if not lines:
-            return None, None
+        csv_reader = csv.reader(io.StringIO(content))
         
         all_items = []
         
-        for line in lines:
-            if not line.strip():
-                continue
-            
-            fields = line.split(',')
-            
-            # Find the field containing " - " (product description)
-            desc_idx = None
-            for i, field in enumerate(fields):
-                if " - " in field:
-                    desc_idx = i
+        # Sample first 10 rows to detect columns
+        rows_sample = []
+        for i, row in enumerate(csv_reader):
+            rows_sample.append(row)
+            if i >= 10:
+                break
+        
+        # Detect column indices
+        branch_col = None
+        desc_col = None
+        qty_col = None
+        
+        branch_keywords = ["POPULAR SHOE COMPANY", "PRAGATHI SHOES AMD 2", "PRAGATHI SHOES RAGOLU", 
+                           "PRAGATHI SHOES BALAGA", "PRAGATHI SHOES AKP", "PRAGATHI SHOES"]
+        
+        for col_idx in range(max(len(row) for row in rows_sample) if rows_sample else 0):
+            # Description column: contains " - "
+            if desc_col is None and any(" - " in str(row[col_idx]) for row in rows_sample if col_idx < len(row)):
+                desc_col = col_idx
+            # Branch column: contains known branch names
+            if branch_col is None and any(any(keyword in str(row[col_idx]) for keyword in branch_keywords) 
+                                          for row in rows_sample if col_idx < len(row)):
+                branch_col = col_idx
+            # Quantity column: numeric
+            if qty_col is None:
+                for row in rows_sample:
+                    if col_idx < len(row):
+                        try:
+                            val = float(row[col_idx])
+                            if val >= 0:
+                                qty_col = col_idx
+                                break
+                        except:
+                            pass
+                if qty_col is not None:
                     break
-            
-            if desc_idx is None:
+        
+        # Fallback
+        if desc_col is None:
+            desc_col = 16
+        if branch_col is None:
+            branch_col = 15
+        if qty_col is None:
+            qty_col = 17
+        
+        # Re-read entire file
+        csv_reader = csv.reader(io.StringIO(content))
+        for row in csv_reader:
+            if len(row) <= max(branch_col, desc_col, qty_col):
                 continue
-            
-            desc = fields[desc_idx].strip()
-            
-            # Extract branch: try column before description, then after
-            branch = ""
-            if desc_idx > 0:
-                branch = fields[desc_idx - 1].strip()
-            if not branch or branch not in BRANCHES:
-                if desc_idx + 1 < len(fields):
-                    branch = fields[desc_idx + 1].strip()
-            
-            # Find quantity: look for a numeric field not the description
-            qty = 0
-            for i, field in enumerate(fields):
-                try:
-                    val = float(field)
-                    if i != desc_idx and val >= 0:
-                        qty = val
-                        break
-                except:
-                    continue
-            
-            # Parse the product description
-            if " - " in desc:
-                parts = desc.split(" - ")
-                if len(parts) >= 5:
-                    all_items.append({
-                        "Branch": branch,
-                        "Product": parts[0].strip(),
-                        "Colour": parts[1].strip(),
-                        "Size": parts[2].strip(),
-                        "Article": parts[3].strip(),
-                        "MRP": parts[4].strip(),
-                        "Quantity": qty
-                    })
+            branch = row[branch_col].strip()
+            desc = row[desc_col].strip()
+            if " - " not in desc:
+                continue
+            try:
+                qty = float(row[qty_col])
+            except:
+                qty = 0
+            if qty < 0:
+                qty = 0
+            parts = desc.split(" - ")
+            if len(parts) >= 5:
+                all_items.append({
+                    "Branch": branch,
+                    "Product": parts[0].strip(),
+                    "Colour": parts[1].strip(),
+                    "Size": parts[2].strip(),
+                    "Article": parts[3].strip(),
+                    "MRP": parts[4].strip(),
+                    "Quantity": qty
+                })
         
         if not all_items:
-            st.error("No valid product rows found. Please check the CSV format.")
+            st.error("No valid product rows found. Debug: branch_col={}, desc_col={}, qty_col={}".format(branch_col, desc_col, qty_col))
             return None, None
         
         df_items = pd.DataFrame(all_items)
@@ -148,7 +169,7 @@ def process_inventory_file(uploaded_file):
         return None, None
 
 # ============================================
-# TRANSFER CALCULATION
+# TRANSFER CALCULATION (unchanged)
 # ============================================
 
 def calculate_all_transfers(complete_inventory, branches_config):
