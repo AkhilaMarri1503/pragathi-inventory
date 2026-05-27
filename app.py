@@ -7,7 +7,7 @@ import re
 
 st.set_page_config(page_title="Pragathi Shoes - Complete Transfer System", layout="wide")
 st.title("👞 Pragathi Shoes – Complete Stock Transfer System")
-st.markdown("**Real brand names from your Excel file – no more 'Boys'/'Girls'**")
+st.markdown("**Real brand names, brand & article search, warehouse tab with fixed target**")
 
 # ============================================
 # HELPER FUNCTIONS
@@ -47,10 +47,8 @@ def table_to_pdf(df, title, landscape=False):
 # ============================================
 
 def parse_excel(uploaded_file):
-    """Read Excel, locate header row, parse Branch, Product, Brand, Colour, Size, Article, MRP, CLQTY."""
     df_raw = pd.read_excel(uploaded_file, sheet_name='Sheet1', header=None)
     
-    # Find row where column A equals 'Branch'
     header_row_idx = None
     for i in range(len(df_raw)):
         if df_raw.iloc[i, 0] == 'Branch':
@@ -101,7 +99,6 @@ def parse_excel(uploaded_file):
         article = clean_text(row[col_map['article']])
         mrp = clean_text(row[col_map['mrp']])
         
-        # Robust quantity parsing
         try:
             qty_str = str(row[col_map['qty']]).replace(',', '').strip()
             if qty_str and qty_str not in ['nan', '']:
@@ -127,7 +124,7 @@ def parse_excel(uploaded_file):
     return items
 
 # ============================================
-# INVENTORY BUILDER – NO get_brand() anywhere
+# INVENTORY BUILDER
 # ============================================
 
 def build_inventory(items):
@@ -152,7 +149,7 @@ def build_inventory(items):
                 "Branch": branch,
                 "SKU": sku,
                 "Product": sku_row['Product'],
-                "Brand": sku_row['Brand'],   # <- uses actual brand from Excel
+                "Brand": sku_row['Brand'],
                 "Colour": sku_row['Colour'],
                 "Size": sku_row['Size'],
                 "Article": sku_row['Article'],
@@ -163,7 +160,7 @@ def build_inventory(items):
     return inv, all_branches, all_skus
 
 # ============================================
-# TRANSFER LOGIC (same as before)
+# TRANSFER LOGIC
 # ============================================
 
 def calculate_transfers(inv, branch_targets):
@@ -286,7 +283,6 @@ if uploaded:
             inv, branches, all_skus = build_inventory(items)
             if inv is None:
                 st.stop()
-            # Set targets: retail branches default 8, warehouse fixed 20
             targets = {b: 8 for b in branches}
             warehouse_name = "PRAGATHI SHOES"
             if warehouse_name in targets:
@@ -307,7 +303,7 @@ if st.session_state.loaded and st.session_state.branches:
     targets = st.session_state.targets
     transfers = st.session_state.transfers
 
-    # Per‑SKU shortage for each branch
+    # Per‑SKU shortage
     needs = {}
     for b in branches:
         branch_df = inv[b]
@@ -402,7 +398,7 @@ if st.session_state.loaded and st.session_state.branches:
             st.success("✅ Every product has stock in at least one branch.")
             st.info("Note: Individual branches may still have zero‑stock items – see each branch tab (Table 1).")
 
-    # Branch‑specific tabs
+    # Branch‑specific tabs (including PRAGATHI SHOES)
     for idx, branch in enumerate(branches):
         with tabs[idx+3]:
             branch_df = inv[branch].copy()
@@ -419,13 +415,20 @@ if st.session_state.loaded and st.session_state.branches:
             c4.metric("Low Stock", len(branch_df[(branch_df['Quantity'] > 0) & (branch_df['Quantity'] < min_level)]))
             c5.metric("Surplus", len(branch_df[branch_df['Quantity'] > tgt]))
 
-            # Zero Stock Table
+            # Zero Stock Table with article AND brand search
             st.subheader("Table 1: Zero Stock Items")
             zero = branch_df[branch_df['Quantity'] == 0].copy()
             if not zero.empty:
-                search = st.text_input(f"🔍 Search Article", key=f"search_{branch}")
-                if search:
-                    zero = zero[zero['Article'].str.contains(search, case=False, na=False)]
+                col1, col2 = st.columns(2)
+                with col1:
+                    search_article = st.text_input(f"🔍 Search Article", key=f"search_article_{branch}")
+                with col2:
+                    search_brand = st.text_input(f"🏷️ Search Brand", key=f"search_brand_{branch}")
+                if search_article:
+                    zero = zero[zero['Article'].str.contains(search_article, case=False, na=False)]
+                if search_brand:
+                    zero = zero[zero['Brand'].str.contains(search_brand, case=False, na=False)]
+                
                 disp_zero = zero[['Product', 'Brand', 'Size', 'Colour', 'Article', 'MRP']].reset_index(drop=True)
                 disp_zero.insert(0, "Select", False)
                 edited = st.data_editor(
@@ -505,10 +508,11 @@ else:
     ## Pragathi Shoes – Complete Stock Transfer System
 
     **Features:**
-    - **Real brand names** (ASIAN, BATA, LANCER, etc.) – no more “Boys”/“Girls”.
-    - **All branches** (including warehouse) are shown as tabs.
-    - **Warehouse target fixed** (20) – no sidebar slider.
-    - **Per‑SKU shortage calculation**.
-    - **Zero‑stock deletion** per branch (search, multi‑select, reset).
-    - **PDF reports** for every table.
+    - **Real brand names** (ASIAN, BATA, LANCER, etc.)
+    - **Zero stock items can be searched by Article AND Brand** (two separate search boxes)
+    - **All branches** (including warehouse) shown as tabs
+    - **Warehouse target fixed** (20) – no sidebar slider
+    - **Per‑SKU shortage calculation**
+    - **Zero‑stock deletion** per branch (multi‑select, reset)
+    - **PDF reports** for every table
     """)
