@@ -10,7 +10,7 @@ import io
 st.set_page_config(page_title="Universal Inventory Transfer System", layout="wide")
 
 st.title("📦 Universal Inventory Transfer System")
-st.markdown("**Works with any CSV containing product descriptions like `Product - Colour - Size - Article - MRP`**")
+st.markdown("**Works with any CSV – auto‑detects structured or ragged format**")
 
 # ============================================
 # BRANCH CONFIGURATION
@@ -34,10 +34,72 @@ def get_brand(product):
     return "Boys" if "BOYS" in product.upper() else ("Girls" if "GIRLS" in product.upper() else "Unisex")
 
 # ============================================
-# CSV READING & PARSING WITH MANUAL OVERRIDE
+# PARSERS – STRUCTURED & RAGGED
 # ============================================
 
-def read_csv_rows(uploaded_file):
+def parse_structured_csv(uploaded_file):
+    """Try to read as normal CSV with headers."""
+    try:
+        df = pd.read_csv(uploaded_file)
+        # Check for required columns (case‑insensitive)
+        cols_lower = [c.lower() for c in df.columns]
+        # Find branch column (Store_Name or similar)
+        branch_col = None
+        for c in df.columns:
+            if c.lower() in ["store_name", "branch", "company_name", "store"]:
+                branch_col = c
+                break
+        if branch_col is None:
+            # fallback to first column
+            branch_col = df.columns[0]
+        # Find description column (Product_Full_Description)
+        desc_col = None
+        for c in df.columns:
+            if "description" in c.lower() or "product" in c.lower():
+                desc_col = c
+                break
+        if desc_col is None:
+            # fallback to column after branch?
+            desc_col = df.columns[1]
+        # Find quantity column (Closing_Quantity)
+        qty_col = None
+        for c in df.columns:
+            if "quantity" in c.lower() or "closing" in c.lower():
+                qty_col = c
+                break
+        if qty_col is None:
+            qty_col = df.columns[11]  # typical position in your file
+
+        items = []
+        for _, row in df.iterrows():
+            branch = str(row[branch_col]).strip()
+            desc = str(row[desc_col]).strip()
+            if " - " not in desc:
+                continue
+            try:
+                qty = float(row[qty_col])
+            except:
+                qty = 0
+            if qty < 0:
+                qty = 0
+            parts = desc.split(" - ")
+            if len(parts) >= 5:
+                items.append({
+                    "Branch": branch,
+                    "Product": parts[0].strip(),
+                    "Colour": parts[1].strip(),
+                    "Size": parts[2].strip(),
+                    "Article": parts[3].strip(),
+                    "MRP": parts[4].strip(),
+                    "Quantity": qty
+                })
+        if items:
+            return items, "structured CSV"
+    except Exception as e:
+        st.warning(f"Structured parsing failed: {e}")
+    return [], None
+
+def read_file_lines(uploaded_file):
     content = uploaded_file.getvalue().decode('utf-8', errors='ignore')
     sniffer = csv.Sniffer()
     try:
@@ -48,10 +110,41 @@ def read_csv_rows(uploaded_file):
     csv_reader = csv.reader(io.StringIO(content), delimiter=delimiter)
     return list(csv_reader)
 
-def parse_rows_manual(rows, branch_col, desc_col, qty_col, start_row=0):
+def parse_ragged_csv(rows):
+    """Fallback for old SCHOOL STOCK.csv with many headers."""
+    # Find first row containing " - "
+    start = 0
+    for i, row in enumerate(rows):
+        if any(" - " in cell for cell in row):
+            start = i
+            break
+    if start == len(rows):
+        return []
+    # Use that row to guess column indices
+    sample = rows[start]
+    desc_col = None
+    branch_col = None
+    qty_col = None
+    for col, cell in enumerate(sample):
+        if " - " in cell:
+            desc_col = col
+        if any(branch in cell for branch in KNOWN_BRANCHES):
+            branch_col = col
+        try:
+            val = float(cell)
+            if val >= 0:
+                qty_col = col
+        except:
+            pass
+    if desc_col is None:
+        return []
+    if branch_col is None:
+        branch_col = desc_col - 1 if desc_col > 0 else 0
+    if qty_col is None:
+        qty_col = desc_col + 1 if desc_col + 1 < len(sample) else len(sample)-1
     items = []
-    for row in rows[start_row:]:
-        if len(row) <= max(branch_col, desc_col, qty_col):
+    for row in rows[start:]:
+        if len(row) <= max(desc_col, branch_col, qty_col):
             continue
         branch = row[branch_col].strip()
         desc = row[desc_col].strip()
@@ -76,14 +169,14 @@ def parse_rows_manual(rows, branch_col, desc_col, qty_col, start_row=0):
             })
     return items
 
-def build_inventory(all_items):
-    if not all_items:
+def build_inventory(items):
+    if not items:
         return None, None, []
-    df_items = pd.DataFrame(all_items)
+    df_items = pd.DataFrame(items)
     df_items['SKU'] = df_items.apply(lambda x: f"{x['Product']}|{x['Colour']}|{x['Size']}|{x['Article']}|{x['MRP']}", axis=1)
     all_skus = df_items['SKU'].unique()
     unique_branches = df_items['Branch'].unique()
-    complete_inventory = {}
+    inv = {}
     for branch in unique_branches:
         branch_data = df_items[df_items['Branch'] == branch]
         sku_dict = {row['SKU']: row['Quantity'] for _, row in branch_data.iterrows()}
@@ -102,8 +195,8 @@ def build_inventory(all_items):
                 "Quantity": quantity,
                 "Brand": get_brand(sku_row['Product'])
             })
-        complete_inventory[branch] = pd.DataFrame(records)
-    return complete_inventory, all_skus, list(unique_branches)
+        inv[branch] = pd.DataFrame(records)
+    return inv, all_skus, list(unique_branches)
 
 # ============================================
 # TRANSFER LOGIC (warehouse = any branch named "PRAGATHI SHOES")
@@ -220,7 +313,6 @@ if "inventory_loaded" not in st.session_state:
     st.session_state.branch_targets = {}
     st.session_state.transfers_df = pd.DataFrame()
     st.session_state.file_name = None
-    st.session_state.raw_rows = None
 
 # ============================================
 # SIDEBAR
@@ -249,78 +341,35 @@ with st.sidebar:
 # ============================================
 
 if uploaded_file:
-    # Load raw rows if new file
-    if st.session_state.file_name != uploaded_file.name:
-        st.session_state.raw_rows = read_csv_rows(uploaded_file)
-        st.session_state.file_name = uploaded_file.name
-        st.session_state.inventory_loaded = False
-        st.session_state.column_choice_made = False
+    # If file is new, parse it
+    if st.session_state.file_name != uploaded_file.name or not st.session_state.inventory_loaded:
+        with st.spinner("Parsing file..."):
+            # First try structured (proper CSV)
+            items, method = parse_structured_csv(uploaded_file)
+            if not items:
+                # Fallback to ragged parser
+                rows = read_file_lines(uploaded_file)
+                items = parse_ragged_csv(rows)
+                method = "ragged fallback"
+            if not items:
+                st.error("Could not parse the file. Make sure it contains product descriptions with ' - '.")
+                st.stop()
+            complete_inv, all_skus, branches = build_inventory(items)
+            if complete_inv is None:
+                st.stop()
+            targets = {b: 8 for b in branches}
+            transfers = calculate_transfers(complete_inv, targets)
+            st.session_state.complete_inventory = complete_inv
+            st.session_state.inventory_data = complete_inv.copy()
+            st.session_state.branches = branches
+            st.session_state.branch_targets = targets
+            st.session_state.transfers_df = transfers
+            st.session_state.file_name = uploaded_file.name
+            st.session_state.inventory_loaded = True
+            st.success(f"✅ Loaded {len(items)} product rows from {len(branches)} branches. Method: {method}")
+            st.rerun()
 
-    raw_rows = st.session_state.raw_rows
-    if raw_rows is None:
-        st.stop()
-
-    # Show preview
-    st.subheader("📄 CSV Preview (first 5 rows)")
-    preview_df = pd.DataFrame(raw_rows[:5])
-    st.dataframe(preview_df, use_container_width=True)
-
-    # If not yet loaded, provide manual column selection
-    if not st.session_state.inventory_loaded:
-        st.subheader("🔧 Column Mapping (use preview to find correct indices)")
-        num_cols = max(len(row) for row in raw_rows) if raw_rows else 0
-        if num_cols == 0:
-            st.error("Empty file")
-            st.stop()
-
-        # Default guesses: description column often contains " - "
-        desc_guess = None
-        for i, row in enumerate(raw_rows[:10]):
-            for col, cell in enumerate(row):
-                if " - " in cell:
-                    desc_guess = col
-                    break
-            if desc_guess is not None:
-                break
-        branch_guess = desc_guess - 1 if desc_guess is not None else 0
-        qty_guess = desc_guess + 1 if desc_guess is not None else 1
-
-        branch_col = st.number_input("Branch Column Index (0‑based)", min_value=0, max_value=num_cols-1, value=branch_guess, step=1)
-        desc_col = st.number_input("Description Column Index (0‑based)", min_value=0, max_value=num_cols-1, value=desc_guess if desc_guess is not None else 0, step=1)
-        qty_col = st.number_input("Quantity Column Index (0‑based)", min_value=0, max_value=num_cols-1, value=qty_guess, step=1)
-        start_row = st.number_input("Start Row (skip header rows)", min_value=0, max_value=len(raw_rows)-1, value=0, step=1)
-
-        if st.button("✅ Load Data with these columns"):
-            with st.spinner("Parsing inventory..."):
-                items = parse_rows_manual(raw_rows, branch_col, desc_col, qty_col, start_row)
-                if not items:
-                    st.error("No product rows found. Check that the description column contains ' - '.")
-                    st.stop()
-                # Show branch distribution
-                df_temp = pd.DataFrame(items)
-                branch_counts = df_temp['Branch'].value_counts().reset_index()
-                branch_counts.columns = ['Branch', 'Item Count']
-                st.subheader("🔍 Branches detected in your file:")
-                st.dataframe(branch_counts, use_container_width=True)
-                if len(branch_counts) <= 1:
-                    st.warning("Only one branch detected. Make sure the Branch Column Index is correct (should point to column with different branch names).")
-                complete_inv, all_skus, branches = build_inventory(items)
-                if complete_inv is None:
-                    st.stop()
-                targets = {b: 8 for b in branches}
-                transfers = calculate_transfers(complete_inv, targets)
-                st.session_state.complete_inventory = complete_inv
-                st.session_state.inventory_data = complete_inv.copy()
-                st.session_state.branches = branches
-                st.session_state.branch_targets = targets
-                st.session_state.transfers_df = transfers
-                st.session_state.inventory_loaded = True
-                st.success(f"✅ Loaded {len(items)} product rows from {len(branches)} branches.")
-                st.rerun()
-        st.stop()   # wait for user to click Load Data
-
-    # If loaded, show the full app
-    if st.session_state.inventory_loaded:
+    if st.session_state.inventory_loaded and st.session_state.branches:
         complete_inv = st.session_state.complete_inventory
         inv_data = st.session_state.inventory_data
         transfers = st.session_state.transfers_df
@@ -335,7 +384,7 @@ if uploaded_file:
             total_needed = (target - df['Quantity']).clip(lower=0).sum()
             needs[b] = int(total_needed)
 
-        # Create tabs
+        # Tabs
         tab_names = ["📊 Dashboard", "🚚 All Transfers", "📋 Zero Stock Anywhere"] + [f"🏪 {b}" for b in branches]
         tabs = st.tabs(tab_names)
 
@@ -392,26 +441,27 @@ if uploaded_file:
         # Zero Stock Anywhere
         with tabs[2]:
             zero_all = []
-            first = inv_data[branches[0]]
-            if not first.empty:
-                for sku in first['SKU'].unique():
-                    total = 0
-                    info = None
-                    for b in branches:
-                        row = inv_data[b][inv_data[b]['SKU'] == sku]
-                        if not row.empty:
-                            total += row['Quantity'].iloc[0]
-                            if info is None:
-                                info = {
-                                    "Product": row['Product'].iloc[0],
-                                    "Colour": row['Colour'].iloc[0],
-                                    "Size": row['Size'].iloc[0],
-                                    "Brand": row['Brand'].iloc[0],
-                                    "Article": row['Article'].iloc[0],
-                                    "MRP": row['MRP'].iloc[0]
-                                }
-                    if total == 0 and info:
-                        zero_all.append(info)
+            if branches:
+                first = inv_data[branches[0]]
+                if not first.empty:
+                    for sku in first['SKU'].unique():
+                        total = 0
+                        info = None
+                        for b in branches:
+                            row = inv_data[b][inv_data[b]['SKU'] == sku]
+                            if not row.empty:
+                                total += row['Quantity'].iloc[0]
+                                if info is None:
+                                    info = {
+                                        "Product": row['Product'].iloc[0],
+                                        "Colour": row['Colour'].iloc[0],
+                                        "Size": row['Size'].iloc[0],
+                                        "Brand": row['Brand'].iloc[0],
+                                        "Article": row['Article'].iloc[0],
+                                        "MRP": row['MRP'].iloc[0]
+                                    }
+                        if total == 0 and info:
+                            zero_all.append(info)
             zero_df = pd.DataFrame(zero_all)
             if not zero_df.empty:
                 st.error(f"{len(zero_df)} products have zero stock in all branches")
@@ -449,10 +499,10 @@ if uploaded_file:
                     search = st.text_input(f"🔍 Search Article Number", key=f"search_{branch}")
                     if search:
                         zero = zero[zero['Article'].str.contains(search, case=False, na=False)]
-                    disp_zero = zero[['Product', 'Brand', 'Size', 'Colour', 'Article', 'MRP']].reset_index(drop=True)
-                    disp_zero.insert(0, "Select", False)
+                    display_zero = zero[['Product', 'Brand', 'Size', 'Colour', 'Article', 'MRP']].reset_index(drop=True)
+                    display_zero.insert(0, "Select", False)
                     edited = st.data_editor(
-                        disp_zero,
+                        display_zero,
                         column_config={"Select": st.column_config.CheckboxColumn("Select")},
                         disabled=['Product','Brand','Size','Colour','Article','MRP'],
                         hide_index=True,
@@ -532,18 +582,17 @@ else:
     `Product - Colour - Size - Article - MRP`
 
     ### Features
-    - Auto‑detects columns (branch, description, quantity) – **manual override available**
+    - Auto‑detects **structured** (header row) or **ragged** (old SCHOOL STOCK.csv) format
     - Branch‑wise stock needed analysis
     - Intelligent transfer suggestions (surplus → deficit, including warehouse)
     - **Zero stock table** – search by article, multi‑select delete (affects only that branch), reset
     - **PDF generation** for every table
-    - Works with your original `SCHOOL STOCK.csv` (ragged) and the new structured format
+    - Works with your **new structured CSV** and the original ragged file
 
     ### How to use
-    1. Upload your CSV file.
-    2. If auto‑detection fails, use the preview to manually select column indices.
-    3. Set custom target stock levels per branch in the sidebar (optional).
-    4. Explore the dashboard, transfers, and branch tabs.
-    5. In any branch tab, **search, select and delete zero‑stock items** (changes are local to that branch).
-    6. Download PDF reports as needed.
+    1. Upload your CSV file (structured or ragged).
+    2. Set custom target stock levels per branch in the sidebar (optional).
+    3. Explore the dashboard, transfers, and branch tabs.
+    4. In any branch tab, **search, select and delete zero‑stock items** (changes are local to that branch).
+    5. Download PDF reports as needed.
     """)
