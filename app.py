@@ -5,9 +5,9 @@ from fpdf import FPDF
 from datetime import datetime
 import re
 
-st.set_page_config(page_title="Universal Inventory Manager", layout="wide")
-st.title("📦 Universal Inventory Transfer System")
-st.markdown("**Works with Excel or CSV – robust header detection**")
+st.set_page_config(page_title="Pragathi Inventory Manager", layout="wide")
+st.title("📦 Pragathi Shoes – Complete Stock Transfer System")
+st.markdown("**Warehouse (PRAGATHI SHOES) included as a branch but without a user‑adjustable target**")
 
 # ============================================
 # HELPER FUNCTIONS
@@ -19,9 +19,6 @@ def clean_text(text):
     text = str(text)
     text = re.sub(r'[^\x00-\x7F]+', '', text)
     return text.strip()
-
-def get_brand(product):
-    return "Boys" if "BOYS" in product.upper() else ("Girls" if "GIRLS" in product.upper() else "Unisex")
 
 def table_to_pdf(df, title, landscape=False):
     if df.empty:
@@ -46,15 +43,14 @@ def table_to_pdf(df, title, landscape=False):
     return pdf.output(dest='S').encode('latin-1', errors='ignore')
 
 # ============================================
-# ROBUST EXCEL PARSER – FIXED QUANTITY READING
+# EXCEL PARSER
 # ============================================
 
 def parse_excel(uploaded_file):
-    """Read Excel file, locate header row containing 'Branch', parse using column indices."""
-    # Read all data without header
+    """Read Excel, locate header row, parse all columns."""
     df_raw = pd.read_excel(uploaded_file, sheet_name='Sheet1', header=None)
     
-    # Find the row where the first column equals 'Branch'
+    # Find row where column A equals 'Branch'
     header_row_idx = None
     for i in range(len(df_raw)):
         if df_raw.iloc[i, 0] == 'Branch':
@@ -65,10 +61,7 @@ def parse_excel(uploaded_file):
         st.error("Could not find header row (expected 'Branch' in column A).")
         return []
     
-    # Get header values from that row
     header_vals = df_raw.iloc[header_row_idx].tolist()
-    
-    # Map expected column names to their indices (case‑insensitive)
     col_map = {}
     for idx, val in enumerate(header_vals):
         val_str = str(val).strip().lower()
@@ -76,6 +69,8 @@ def parse_excel(uploaded_file):
             col_map['branch'] = idx
         elif val_str == 'product':
             col_map['product'] = idx
+        elif val_str == 'brand':
+            col_map['brand'] = idx
         elif val_str == 'colour':
             col_map['colour'] = idx
         elif val_str == 'size':
@@ -87,27 +82,25 @@ def parse_excel(uploaded_file):
         elif val_str == 'clqty':
             col_map['qty'] = idx
     
-    # Verify required columns exist
-    required = ['branch', 'product', 'colour', 'size', 'article', 'mrp', 'qty']
+    required = ['branch', 'product', 'brand', 'colour', 'size', 'article', 'mrp', 'qty']
     missing = [r for r in required if r not in col_map]
     if missing:
         st.error(f"Missing columns in header: {missing}")
         return []
     
-    # Parse data rows (from the row after header)
     items = []
     for i in range(header_row_idx + 1, len(df_raw)):
         row = df_raw.iloc[i]
         branch = clean_text(row[col_map['branch']])
-        if not branch:   # skip empty branch rows
+        if not branch:
             continue
         product = clean_text(row[col_map['product']])
+        brand = clean_text(row[col_map['brand']])
         colour = clean_text(row[col_map['colour']])
         size = clean_text(row[col_map['size']])
         article = clean_text(row[col_map['article']])
         mrp = clean_text(row[col_map['mrp']])
         
-        # Robust quantity parsing: handle commas, text, empty values
         try:
             qty_str = str(row[col_map['qty']]).replace(',', '').strip()
             if qty_str and qty_str not in ['nan', '']:
@@ -119,10 +112,11 @@ def parse_excel(uploaded_file):
         
         if qty <= 0:
             continue
-            
+        
         items.append({
             "Branch": branch,
             "Product": product,
+            "Brand": brand,
             "Colour": colour,
             "Size": size,
             "Article": article,
@@ -132,158 +126,22 @@ def parse_excel(uploaded_file):
     return items
 
 # ============================================
-# CSV PARSERS (for compatibility)
+# INVENTORY BUILDER (all branches, including warehouse)
 # ============================================
 
-def parse_csv_structured(df):
-    """Try to parse CSV as structured (with headers)."""
-    branch_col = None
-    desc_col = None
-    qty_col = None
-    for col in df.columns:
-        if col.lower() in ['store_name', 'branch', 'company_name', 'store']:
-            branch_col = col
-        if 'description' in col.lower() or 'product_full' in col.lower():
-            desc_col = col
-        if 'quantity' in col.lower() or 'closing' in col.lower():
-            qty_col = col
-    if desc_col is None:
-        for col in df.columns:
-            if df[col].astype(str).str.contains(" - ").any():
-                desc_col = col
-                break
-    if branch_col is None:
-        for col in df.columns:
-            if df[col].astype(str).str.contains("POPULAR|PRAGATHI").any():
-                branch_col = col
-                break
-    if qty_col is None:
-        for col in df.columns:
-            if pd.api.types.is_numeric_dtype(df[col]):
-                qty_col = col
-                break
-    if None in (branch_col, desc_col, qty_col):
-        return []
-    items = []
-    for _, row in df.iterrows():
-        branch = clean_text(row[branch_col])
-        desc = clean_text(row[desc_col])
-        if " - " not in desc:
-            continue
-        try:
-            qty = float(row[qty_col])
-        except:
-            qty = 0
-        if qty <= 0:
-            continue
-        parts = desc.split(" - ")
-        if len(parts) >= 5:
-            items.append({
-                "Branch": branch,
-                "Product": parts[0].strip(),
-                "Colour": parts[1].strip(),
-                "Size": parts[2].strip(),
-                "Article": parts[3].strip(),
-                "MRP": parts[4].strip(),
-                "Quantity": qty
-            })
-    return items
-
-def parse_csv_ragged(rows):
-    """Fallback for old ragged CSV."""
-    start = 0
-    for i, row in enumerate(rows):
-        if any(" - " in cell for cell in row):
-            start = i
-            break
-    if start == len(rows):
-        return []
-    sample = rows[start]
-    desc_col = None
-    branch_col = None
-    qty_col = None
-    for col, cell in enumerate(sample):
-        if " - " in cell:
-            desc_col = col
-        if any(branch in cell for branch in ["POPULAR", "PRAGATHI"]):
-            branch_col = col
-        try:
-            val = float(cell)
-            if val >= 0:
-                qty_col = col
-        except:
-            pass
-    if desc_col is None:
-        return []
-    if branch_col is None:
-        branch_col = desc_col - 1 if desc_col > 0 else 0
-    if qty_col is None:
-        qty_col = desc_col + 1 if desc_col + 1 < len(sample) else len(sample)-1
-    items = []
-    for row in rows[start:]:
-        if len(row) <= max(desc_col, branch_col, qty_col):
-            continue
-        branch = row[branch_col].strip()
-        desc = row[desc_col].strip()
-        if " - " not in desc:
-            continue
-        try:
-            qty = float(row[qty_col])
-        except:
-            qty = 0
-        if qty <= 0:
-            continue
-        parts = desc.split(" - ")
-        if len(parts) >= 5:
-            items.append({
-                "Branch": branch,
-                "Product": parts[0].strip(),
-                "Colour": parts[1].strip(),
-                "Size": parts[2].strip(),
-                "Article": parts[3].strip(),
-                "MRP": parts[4].strip(),
-                "Quantity": qty
-            })
-    return items
-
-# ============================================
-# MAIN LOADER
-# ============================================
-
-def load_inventory(uploaded_file):
-    file_ext = uploaded_file.name.split('.')[-1].lower()
-    if file_ext == 'xlsx':
-        items = parse_excel(uploaded_file)
-        method = "Excel"
-    else:
-        # Try structured CSV first
-        df = pd.read_csv(uploaded_file)
-        items = parse_csv_structured(df)
-        if items:
-            method = "Structured CSV"
-        else:
-            # Fallback to ragged parser
-            import csv, io
-            content = uploaded_file.getvalue().decode('utf-8', errors='ignore')
-            sniffer = csv.Sniffer()
-            try:
-                dialect = sniffer.sniff(content[:500])
-                delimiter = dialect.delimiter
-            except:
-                delimiter = ','
-            csv_reader = csv.reader(io.StringIO(content), delimiter=delimiter)
-            rows = list(csv_reader)
-            items = parse_csv_ragged(rows)
-            method = "Ragged CSV fallback"
+def build_inventory(items):
+    """Create per‑branch inventory dictionaries for all branches."""
     if not items:
-        st.error("No valid product rows found.")
-        return None, None, [], method
+        return None, None, None
+    
     df_items = pd.DataFrame(items)
-    df_items['SKU'] = df_items.apply(lambda x: f"{x['Product']}|{x['Colour']}|{x['Size']}|{x['Article']}|{x['MRP']}", axis=1)
+    df_items['SKU'] = df_items.apply(
+        lambda x: f"{x['Product']}|{x['Brand']}|{x['Colour']}|{x['Size']}|{x['Article']}|{x['MRP']}", axis=1)
     all_skus = df_items['SKU'].unique()
-    branches = df_items['Branch'].unique().tolist()
+    all_branches = df_items['Branch'].unique().tolist()
+    
     inv = {}
-    for branch in branches:
+    for branch in all_branches:
         branch_data = df_items[df_items['Branch'] == branch]
         sku_dict = {row['SKU']: row['Quantity'] for _, row in branch_data.iterrows()}
         records = []
@@ -294,57 +152,60 @@ def load_inventory(uploaded_file):
                 "Branch": branch,
                 "SKU": sku,
                 "Product": sku_row['Product'],
+                "Brand": sku_row['Brand'],
                 "Colour": sku_row['Colour'],
                 "Size": sku_row['Size'],
                 "Article": sku_row['Article'],
                 "MRP": sku_row['MRP'],
-                "Quantity": q,
-                "Brand": get_brand(sku_row['Product'])
+                "Quantity": q
             })
         inv[branch] = pd.DataFrame(records)
-    return inv, all_skus, branches, method
+    return inv, all_branches, all_skus
 
 # ============================================
-# TRANSFER LOGIC
+# TRANSFER LOGIC (includes warehouse with fixed target)
 # ============================================
 
-def calculate_transfers(inv, targets):
-    transfers = []
+def calculate_transfers(inv, branch_targets):
+    """Calculate transfers between all branches (warehouse included)."""
     if not inv:
         return pd.DataFrame()
-    first_branch = next(iter(inv.values()))
-    if first_branch.empty:
-        return pd.DataFrame()
-    all_skus = first_branch['SKU'].unique()
+    all_skus = next(iter(inv.values()))['SKU'].unique()
+    transfers = []
     for sku in all_skus:
-        stock = {}
+        # Get stock per branch
+        branch_stock = {}
         details = {}
         for branch, df in inv.items():
             row = df[df['SKU'] == sku]
             if not row.empty:
                 q = row['Quantity'].iloc[0]
-                stock[branch] = q
+                branch_stock[branch] = q
                 if not details:
                     details = {
                         "Product": row['Product'].iloc[0],
+                        "Brand": row['Brand'].iloc[0],
                         "Colour": row['Colour'].iloc[0],
                         "Size": row['Size'].iloc[0],
                         "Article": row['Article'].iloc[0],
-                        "MRP": row['MRP'].iloc[0],
-                        "Brand": row['Brand'].iloc[0]
+                        "MRP": row['MRP'].iloc[0]
                     }
             else:
-                stock[branch] = 0
+                branch_stock[branch] = 0
         if not details:
             continue
+        
+        # Identify surplus and deficit
         surplus = []
         deficit = []
-        for branch, qty in stock.items():
-            target = targets.get(branch, 8)
+        for branch, qty in branch_stock.items():
+            target = branch_targets.get(branch, 8)
             if qty > target:
                 surplus.append({"branch": branch, "excess": qty - target, "current": qty})
             elif qty < target:
                 deficit.append({"branch": branch, "need": target - qty, "current": qty})
+        
+        # Match surplus to deficit
         for s in surplus:
             rem = s["excess"]
             for d in deficit[:]:
@@ -355,15 +216,15 @@ def calculate_transfers(inv, targets):
                     transfers.append({
                         "SKU": sku,
                         "Product": details['Product'],
+                        "Brand": details['Brand'],
                         "Colour": details['Colour'],
                         "Size": details['Size'],
                         "Article": details['Article'],
                         "MRP": details['MRP'],
-                        "Brand": details['Brand'],
                         "From Branch": s["branch"],
                         "To Branch": d["branch"],
                         "Transfer Qty": transfer,
-                        "Reason": f"From {s['branch']} to {d['branch']}"
+                        "Reason": f"Surplus from {s['branch']} to {d['branch']}"
                     })
                     rem -= transfer
                     d["need"] -= transfer
@@ -392,22 +253,25 @@ if "loaded" not in st.session_state:
     st.session_state.file_name = None
 
 # ============================================
-# SIDEBAR
+# SIDEBAR – exclude warehouse from targets
 # ============================================
 
 with st.sidebar:
-    st.header("⚙️ Configuration")
-    uploaded = st.file_uploader("Upload Inventory File (CSV or Excel)", type=["csv", "xlsx"])
+    st.header("⚙️ Branch Targets (Retail Only)")
+    uploaded = st.file_uploader("Upload SCHOOL STOCK.xlsx", type=["xlsx"])
     st.divider()
     if st.session_state.loaded and st.session_state.branches:
-        st.subheader("Branch Targets")
+        warehouse_name = "PRAGATHI SHOES"
         for b in st.session_state.branches:
+            if b == warehouse_name:
+                continue   # skip warehouse in sidebar
             cur = st.session_state.targets.get(b, 8)
             new = st.number_input(f"{b}", min_value=1, max_value=50, value=cur, key=f"tgt_{b}")
             if new != cur:
                 st.session_state.targets[b] = new
                 st.session_state.transfers = calculate_transfers(st.session_state.inv, st.session_state.targets)
                 st.rerun()
+        st.info(f"Warehouse ({warehouse_name}) has a fixed target of 20 (not adjustable).")
     if st.button("🔄 Reset All Data"):
         for k in list(st.session_state.keys()):
             del st.session_state[k]
@@ -420,10 +284,17 @@ with st.sidebar:
 if uploaded:
     if st.session_state.file_name != uploaded.name or not st.session_state.loaded:
         with st.spinner("Loading inventory..."):
-            inv, _, branches, method = load_inventory(uploaded)
+            items = parse_excel(uploaded)
+            if not items:
+                st.stop()
+            inv, branches, all_skus = build_inventory(items)
             if inv is None:
                 st.stop()
+            # Set targets: retail branches default 8, warehouse fixed 20
             targets = {b: 8 for b in branches}
+            warehouse_name = "PRAGATHI SHOES"
+            if warehouse_name in targets:
+                targets[warehouse_name] = 20   # fixed warehouse target
             transfers = calculate_transfers(inv, targets)
             st.session_state.inv = inv
             st.session_state.branches = branches
@@ -431,7 +302,7 @@ if uploaded:
             st.session_state.transfers = transfers
             st.session_state.file_name = uploaded.name
             st.session_state.loaded = True
-            st.success(f"Loaded {len(branches)} branches using {method}.")
+            st.success(f"Loaded {len(branches)} branches (warehouse target = 20, retail default = 8).")
             st.rerun()
 
 if st.session_state.loaded and st.session_state.branches:
@@ -440,14 +311,20 @@ if st.session_state.loaded and st.session_state.branches:
     targets = st.session_state.targets
     transfers = st.session_state.transfers
 
-    needs = {b: max(0, targets[b] - inv[b]['Quantity'].sum()) for b in branches}
+    # Per‑SKU shortage for each branch
+    needs = {}
+    for b in branches:
+        branch_df = inv[b]
+        target_val = targets[b]
+        total_shortage = (target_val - branch_df['Quantity']).clip(lower=0).sum()
+        needs[b] = int(total_shortage)
 
     tab_names = ["📊 Dashboard", "🚚 All Transfers", "📋 Zero Stock Anywhere"] + [f"🏪 {b}" for b in branches]
     tabs = st.tabs(tab_names)
 
     # Dashboard
     with tabs[0]:
-        st.subheader("Branch‑wise Stock Needed")
+        st.subheader("Branch‑wise Stock Needed (total units to reach target per SKU)")
         need_df = pd.DataFrame(list(needs.items()), columns=["Branch", "Units Needed"]).sort_values("Units Needed", ascending=False)
         st.dataframe(need_df, use_container_width=True)
         if st.button("📄 Branch Needs PDF"):
@@ -461,15 +338,17 @@ if st.session_state.loaded and st.session_state.branches:
             df = inv[b]
             tgt = targets[b]
             tot = int(df['Quantity'].sum())
-            target_tot = tgt * len(df)
+            target_total = tgt * len(df)
+            zero_skus = len(df[df['Quantity'] == 0])
+            low_skus = len(df[(df['Quantity'] > 0) & (df['Quantity'] < tgt)])
             summary.append({
                 "Branch": b,
                 "Total Stock": tot,
-                "Target Total": target_tot,
-                "Shortage": max(0, target_tot - tot),
-                "Surplus": max(0, tot - target_tot),
-                "Zero SKUs": len(df[df['Quantity'] == 0]),
-                "Low SKUs": len(df[(df['Quantity'] > 0) & (df['Quantity'] < tgt)])
+                "Target Total": target_total,
+                "Shortage (total)": max(0, target_total - tot),
+                "Surplus (total)": max(0, tot - target_total),
+                "Zero SKUs": zero_skus,
+                "Low SKUs": low_skus
             })
         sum_df = pd.DataFrame(summary)
         st.dataframe(sum_df, use_container_width=True)
@@ -481,7 +360,7 @@ if st.session_state.loaded and st.session_state.branches:
     # All Transfers
     with tabs[1]:
         if not transfers.empty:
-            disp = transfers[['From Branch', 'To Branch', 'Product', 'Size', 'Colour', 'Article', 'MRP', 'Transfer Qty']]
+            disp = transfers[['From Branch', 'To Branch', 'Product', 'Brand', 'Size', 'Colour', 'Article', 'MRP', 'Transfer Qty']]
             st.dataframe(disp, use_container_width=True)
             if st.button("📄 All Transfers PDF"):
                 pdf = table_to_pdf(disp, "All Suggested Transfers", landscape=True)
@@ -490,7 +369,7 @@ if st.session_state.loaded and st.session_state.branches:
         else:
             st.success("No transfers needed.")
 
-    # Zero Stock Anywhere
+    # Zero Stock Anywhere (across all branches)
     with tabs[2]:
         zero_all = []
         if branches:
@@ -506,9 +385,9 @@ if st.session_state.loaded and st.session_state.branches:
                             if info is None:
                                 info = {
                                     "Product": row['Product'].iloc[0],
+                                    "Brand": row['Brand'].iloc[0],
                                     "Colour": row['Colour'].iloc[0],
                                     "Size": row['Size'].iloc[0],
-                                    "Brand": row['Brand'].iloc[0],
                                     "Article": row['Article'].iloc[0],
                                     "MRP": row['MRP'].iloc[0]
                                 }
@@ -516,7 +395,7 @@ if st.session_state.loaded and st.session_state.branches:
                         zero_all.append(info)
         zero_df = pd.DataFrame(zero_all)
         if not zero_df.empty:
-            st.error(f"{len(zero_df)} products have zero stock in all branches")
+            st.error(f"{len(zero_df)} products have zero stock in **all branches**.")
             st.dataframe(zero_df[['Product', 'Brand', 'Size', 'Colour', 'Article', 'MRP']], use_container_width=True)
             if st.button("📄 Zero Anywhere PDF"):
                 pdf = table_to_pdf(zero_df[['Product', 'Brand', 'Size', 'Colour', 'Article', 'MRP']],
@@ -524,9 +403,10 @@ if st.session_state.loaded and st.session_state.branches:
                 if pdf:
                     st.download_button("Download", pdf, "zero_anywhere.pdf")
         else:
-            st.success("Every product has stock in at least one branch.")
+            st.success("✅ Every product has stock in at least one branch.")
+            st.info("Note: Individual branches may still have zero‑stock items – see each branch tab (Table 1).")
 
-    # Branch‑specific tabs
+    # Branch‑specific tabs (including PRAGATHI SHOES)
     for idx, branch in enumerate(branches):
         with tabs[idx+3]:
             branch_df = inv[branch].copy()
@@ -566,7 +446,7 @@ if st.session_state.loaded and st.session_state.branches:
                         if selected:
                             new_df = branch_df[~branch_df['Article'].isin(selected)]
                             st.session_state.inv[branch] = new_df
-                            st.session_state.transfers = calculate_transfers(st.session_state.inv, targets)
+                            st.session_state.transfers = calculate_transfers(st.session_state.inv, st.session_state.targets)
                             st.success(f"Deleted {len(selected)} item(s) from {branch}")
                             st.rerun()
                         else:
@@ -574,7 +454,7 @@ if st.session_state.loaded and st.session_state.branches:
                 with col2:
                     if st.button(f"🔄 Reset Branch", key=f"reset_{branch}"):
                         st.session_state.inv[branch] = inv[branch].copy()
-                        st.session_state.transfers = calculate_transfers(st.session_state.inv, targets)
+                        st.session_state.transfers = calculate_transfers(st.session_state.inv, st.session_state.targets)
                         st.success(f"Reset {branch} to original")
                         st.rerun()
                 if st.button(f"📄 PDF - Zero Stock", key=f"zero_pdf_{branch}"):
@@ -612,7 +492,7 @@ if st.session_state.loaded and st.session_state.branches:
                 if pdf:
                     st.download_button("Download", pdf, f"{branch}_full.pdf")
 
-            # Transfers
+            # Transfers involving this branch
             br_trans = get_branch_transfers(transfers, branch)
             if not br_trans.empty:
                 st.subheader("Suggested Transfers")
@@ -624,20 +504,20 @@ if st.session_state.loaded and st.session_state.branches:
                         st.download_button("Download", pdf, f"{branch}_transfers.pdf")
 
 else:
-    st.info("👈 Upload your inventory file (Excel or CSV)")
+    st.info("👈 Upload your SCHOOL STOCK.xlsx file")
     st.markdown("""
-    ## Universal Inventory Transfer System
+    ## Pragathi Shoes – Stock Transfer System
 
-    **Supported files:**
-    - Excel (`.xlsx`) – your `SCHOOL STOCK.xlsx`
-    - Structured CSV with headers
-    - Original ragged CSV (fallback)
+    **Features:**
+    - **All branches** (including `PRAGATHI SHOES` warehouse) are shown as tabs.
+    - **Warehouse target is fixed** (20) and **not** shown in the sidebar – only retail branch targets are adjustable.
+    - **Actual brand names** (ASIAN, BATA, LANCER, etc.) are displayed.
+    - **Per‑SKU shortage calculation** gives accurate “Branch‑wise Stock Needed”.
+    - **Transfers** consider surplus/deficit among all branches (warehouse included).
 
-    ### Features
-    - Auto‑detects header row by looking for 'Branch' in column A
-    - Robust quantity parsing (handles commas, text, empty cells)
-    - Branch‑wise stock needed analysis
-    - Intelligent transfers (surplus → deficit, including warehouse)
-    - Per‑branch zero‑stock deletion (search by article, multi‑select, reset)
-    - PDF reports for every table
+    ### How to use
+    1. Upload `SCHOOL STOCK.xlsx`.
+    2. Adjust retail branch targets in the sidebar (warehouse target is fixed at 20).
+    3. Review dashboard, transfers, and per‑branch zero‑stock deletion.
+    4. Download PDF reports as needed.
     """)
