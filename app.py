@@ -46,7 +46,7 @@ def table_to_pdf(df, title, landscape=False):
     return pdf.output(dest='S').encode('latin-1', errors='ignore')
 
 # ============================================
-# ROBUST EXCEL PARSER – NO KEYERROR
+# ROBUST EXCEL PARSER – FIXED QUANTITY READING
 # ============================================
 
 def parse_excel(uploaded_file):
@@ -106,12 +106,20 @@ def parse_excel(uploaded_file):
         size = clean_text(row[col_map['size']])
         article = clean_text(row[col_map['article']])
         mrp = clean_text(row[col_map['mrp']])
+        
+        # Robust quantity parsing: handle commas, text, empty values
         try:
-            qty = float(row[col_map['qty']])
+            qty_str = str(row[col_map['qty']]).replace(',', '').strip()
+            if qty_str and qty_str not in ['nan', '']:
+                qty = float(qty_str)
+            else:
+                qty = 0
         except:
             qty = 0
+        
         if qty <= 0:
             continue
+            
         items.append({
             "Branch": branch,
             "Product": product,
@@ -297,7 +305,7 @@ def load_inventory(uploaded_file):
     return inv, all_skus, branches, method
 
 # ============================================
-# TRANSFER LOGIC (unchanged)
+# TRANSFER LOGIC
 # ============================================
 
 def calculate_transfers(inv, targets):
@@ -627,6 +635,7 @@ else:
 
     ### Features
     - Auto‑detects header row by looking for 'Branch' in column A
+    - Robust quantity parsing (handles commas, text, empty cells)
     - Branch‑wise stock needed analysis
     - Intelligent transfers (surplus → deficit, including warehouse)
     - Per‑branch zero‑stock deletion (search by article, multi‑select, reset)
