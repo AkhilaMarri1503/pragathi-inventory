@@ -5,9 +5,9 @@ from fpdf import FPDF
 from datetime import datetime
 import re
 
-st.set_page_config(page_title="Pragathi Inventory Manager", layout="wide")
-st.title("📦 Pragathi Shoes – Complete Stock Transfer System")
-st.markdown("**Warehouse (PRAGATHI SHOES) included as a branch but without a user‑adjustable target**")
+st.set_page_config(page_title="Pragathi Shoes - Complete Transfer System", layout="wide")
+st.title("👞 Pragathi Shoes – Complete Stock Transfer System")
+st.markdown("**Warehouse (PRAGATHI SHOES) included as a tab but target fixed (no sidebar slider)**")
 
 # ============================================
 # HELPER FUNCTIONS
@@ -43,11 +43,11 @@ def table_to_pdf(df, title, landscape=False):
     return pdf.output(dest='S').encode('latin-1', errors='ignore')
 
 # ============================================
-# EXCEL PARSER
+# EXCEL PARSER – READS BRAND COLUMN
 # ============================================
 
 def parse_excel(uploaded_file):
-    """Read Excel, locate header row, parse all columns."""
+    """Read Excel, locate header row, parse Branch, Product, Brand, Colour, Size, Article, MRP, CLQTY."""
     df_raw = pd.read_excel(uploaded_file, sheet_name='Sheet1', header=None)
     
     # Find row where column A equals 'Branch'
@@ -101,6 +101,7 @@ def parse_excel(uploaded_file):
         article = clean_text(row[col_map['article']])
         mrp = clean_text(row[col_map['mrp']])
         
+        # Robust quantity parsing
         try:
             qty_str = str(row[col_map['qty']]).replace(',', '').strip()
             if qty_str and qty_str not in ['nan', '']:
@@ -130,7 +131,7 @@ def parse_excel(uploaded_file):
 # ============================================
 
 def build_inventory(items):
-    """Create per‑branch inventory dictionaries for all branches."""
+    """Create per‑branch inventory for all branches."""
     if not items:
         return None, None, None
     
@@ -173,7 +174,6 @@ def calculate_transfers(inv, branch_targets):
     all_skus = next(iter(inv.values()))['SKU'].unique()
     transfers = []
     for sku in all_skus:
-        # Get stock per branch
         branch_stock = {}
         details = {}
         for branch, df in inv.items():
@@ -195,7 +195,6 @@ def calculate_transfers(inv, branch_targets):
         if not details:
             continue
         
-        # Identify surplus and deficit
         surplus = []
         deficit = []
         for branch, qty in branch_stock.items():
@@ -264,7 +263,7 @@ with st.sidebar:
         warehouse_name = "PRAGATHI SHOES"
         for b in st.session_state.branches:
             if b == warehouse_name:
-                continue   # skip warehouse in sidebar
+                continue
             cur = st.session_state.targets.get(b, 8)
             new = st.number_input(f"{b}", min_value=1, max_value=50, value=cur, key=f"tgt_{b}")
             if new != cur:
@@ -294,7 +293,7 @@ if uploaded:
             targets = {b: 8 for b in branches}
             warehouse_name = "PRAGATHI SHOES"
             if warehouse_name in targets:
-                targets[warehouse_name] = 20   # fixed warehouse target
+                targets[warehouse_name] = 20
             transfers = calculate_transfers(inv, targets)
             st.session_state.inv = inv
             st.session_state.branches = branches
@@ -506,14 +505,16 @@ if st.session_state.loaded and st.session_state.branches:
 else:
     st.info("👈 Upload your SCHOOL STOCK.xlsx file")
     st.markdown("""
-    ## Pragathi Shoes – Stock Transfer System
+    ## Pragathi Shoes – Complete Stock Transfer System
 
     **Features:**
     - **All branches** (including `PRAGATHI SHOES` warehouse) are shown as tabs.
-    - **Warehouse target is fixed** (20) and **not** shown in the sidebar – only retail branch targets are adjustable.
-    - **Actual brand names** (ASIAN, BATA, LANCER, etc.) are displayed.
+    - **Actual brand names** (ASIAN, BATA, LANCER, TODAY, etc.) are displayed – no more “Boys”/“Girls”.
+    - **Warehouse target is fixed** (20) and **not** adjustable in the sidebar – only retail branches have sliders.
     - **Per‑SKU shortage calculation** gives accurate “Branch‑wise Stock Needed”.
     - **Transfers** consider surplus/deficit among all branches (warehouse included).
+    - **Zero‑stock deletion** works per branch (search by article, multi‑select, reset).
+    - **PDF reports** for every table.
 
     ### How to use
     1. Upload `SCHOOL STOCK.xlsx`.
