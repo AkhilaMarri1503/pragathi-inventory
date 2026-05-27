@@ -7,7 +7,7 @@ import re
 import csv
 import io
 
-st.set_page_config(page_title="Pragathi Shoes - Complete Transfer System", layout="wide")
+st.set_page_config(page_title="Pragathi Shoes - Universal Stock Transfer System", layout="wide")
 
 st.title("👞 Pragathi Shoes - Universal Stock Transfer System")
 st.markdown("**Automatically cleans and processes any inventory file**")
@@ -28,7 +28,6 @@ BRANCHES = {
 BRANCH_ORDER = ["POPULAR SHOE COMPANY", "PRAGATHI SHOES AMD 2", "PRAGATHI SHOES RAGOLU", 
                 "PRAGATHI SHOES BALAGA", "PRAGATHI SHOES AKP", "PRAGATHI SHOES"]
 
-# Known branch name keywords
 BRANCH_KEYWORDS = ["POPULAR SHOE COMPANY", "PRAGATHI SHOES AMD 2", "PRAGATHI SHOES RAGOLU",
                    "PRAGATHI SHOES BALAGA", "PRAGATHI SHOES AKP", "PRAGATHI SHOES"]
 
@@ -50,127 +49,124 @@ def get_brand(product):
         return "Pragathi"
 
 # ============================================
-# AUTOMATIC CSV PARSER – WORKS ON ANY FILE
+# ULTRA-ROBUST CSV PARSER
 # ============================================
 
-def read_csv_rows(uploaded_file):
-    """Read CSV robustly, handle any delimiter."""
-    content = uploaded_file.getvalue().decode('utf-8')
-    # Try to auto-detect delimiter
-    sniffer = csv.Sniffer()
-    try:
-        dialect = sniffer.sniff(content[:1000])
-        delimiter = dialect.delimiter
-    except:
-        delimiter = ','
-    csv_reader = csv.reader(io.StringIO(content), delimiter=delimiter)
-    return list(csv_reader)
-
-def auto_detect_columns(rows):
-    """Automatically detect branch, description, and quantity columns."""
-    if not rows:
-        return None, None, None
-    
-    # Sample first 10 rows (skip header if it looks like header)
-    start_row = 0
-    # Check if first row contains mostly non-numeric, short strings (likely header)
-    first_row = rows[0]
-    if all(isinstance(x, str) and len(x) < 30 and not re.search(r'\d', x) for x in first_row):
-        start_row = 1
-    
-    branch_col = None
-    desc_col = None
-    qty_col = None
-    
-    # Try to find columns by content
-    for col in range(len(rows[0])):
-        # Check for description column: contains " - " pattern
-        if desc_col is None:
-            for row in rows[start_row:start_row+10]:
-                if col < len(row) and " - " in row[col]:
-                    desc_col = col
-                    break
-        
-        # Check for branch column: contains known branch names
-        if branch_col is None:
-            for row in rows[start_row:start_row+10]:
-                if col < len(row):
-                    cell = row[col].strip()
-                    if any(branch in cell for branch in BRANCH_KEYWORDS):
-                        branch_col = col
-                        break
-        
-        # Check for quantity column: numeric values
-        if qty_col is None:
-            numeric_count = 0
-            for row in rows[start_row:start_row+10]:
-                if col < len(row):
-                    try:
-                        val = float(row[col])
-                        if val >= 0:
-                            numeric_count += 1
-                    except:
-                        pass
-            if numeric_count >= 5:  # at least half of sampled rows are numeric
-                qty_col = col
-    
-    # Fallback to heuristic positions if detection failed
-    if desc_col is None:
-        # Look for any column with " - " in any row
-        for col in range(len(rows[0])):
-            for row in rows[start_row:start_row+20]:
-                if col < len(row) and " - " in row[col]:
-                    desc_col = col
-                    break
-            if desc_col is not None:
-                break
-    
-    if branch_col is None:
-        # Fallback: column before description often contains branch
-        if desc_col is not None and desc_col > 0:
-            branch_col = desc_col - 1
-        else:
-            branch_col = 0
-    
-    if qty_col is None:
-        # Look for numeric column after description or at end
-        if desc_col is not None and desc_col + 1 < len(rows[0]):
-            qty_col = desc_col + 1
-        else:
-            qty_col = len(rows[0]) - 1
-    
-    return branch_col, desc_col, qty_col
-
-def parse_inventory_auto(rows):
-    """Parse rows using auto-detected columns."""
-    branch_col, desc_col, qty_col = auto_detect_columns(rows)
-    if branch_col is None or desc_col is None or qty_col is None:
-        return []
-    
-    all_items = []
-    # Start from row 1 if first row seems like header, else row 0
-    start_row = 0
-    if len(rows) > 0 and all(isinstance(x, str) and len(x) < 30 and not re.search(r'\d', x) for x in rows[0]):
-        start_row = 1
-    
-    for row in rows[start_row:]:
-        if len(row) <= max(branch_col, desc_col, qty_col):
+def read_file_with_fallback(uploaded_file):
+    raw_bytes = uploaded_file.getvalue()
+    for encoding in ['utf-8', 'latin-1', 'cp1252', 'iso-8859-1']:
+        try:
+            content = raw_bytes.decode(encoding)
+            return content, encoding
+        except:
             continue
-        branch = row[branch_col].strip()
+    content = raw_bytes.decode('utf-8', errors='ignore')
+    return content, 'utf-8 (with ignore)'
+
+def parse_inventory_multi_method(content):
+    all_items = []
+    
+    # Strategy 1: csv.reader
+    try:
+        csv_reader = csv.reader(io.StringIO(content))
+        rows = list(csv_reader)
+        if rows:
+            items = parse_from_rows(rows)
+            if items:
+                return items, "csv.reader"
+    except:
+        pass
+    
+    # Strategy 2: pandas
+    try:
+        df = pd.read_csv(io.StringIO(content), on_bad_lines='skip', engine='python')
+        rows = df.astype(str).values.tolist()
+        items = parse_from_rows(rows)
+        if items:
+            return items, "pandas"
+    except:
+        pass
+    
+    # Strategy 3: simple split
+    try:
+        lines = content.splitlines()
+        rows = [line.split(',') for line in lines]
+        items = parse_from_rows(rows)
+        if items:
+            return items, "simple split"
+    except:
+        pass
+    
+    return [], "none"
+
+def parse_from_rows(rows):
+    if not rows:
+        return []
+    # Find description column
+    desc_col = None
+    for col in range(len(rows[0])):
+        for row in rows[:20]:
+            if col < len(row) and " - " in row[col]:
+                desc_col = col
+                break
+        if desc_col is not None:
+            break
+    if desc_col is None:
+        return []
+    # Find branch column
+    branch_col = None
+    for col in range(len(rows[0])):
+        for row in rows[:20]:
+            if col < len(row):
+                cell = row[col].strip()
+                if any(branch in cell for branch in BRANCH_KEYWORDS):
+                    branch_col = col
+                    break
+        if branch_col is not None:
+            break
+    if branch_col is None:
+        branch_col = desc_col - 1 if desc_col > 0 else 0
+    # Find quantity column
+    qty_col = None
+    for col in range(len(rows[0])):
+        numeric_count = 0
+        for row in rows[:20]:
+            if col < len(row):
+                try:
+                    float(row[col])
+                    numeric_count += 1
+                except:
+                    pass
+        if numeric_count >= 5:
+            qty_col = col
+            break
+    if qty_col is None:
+        qty_col = desc_col + 1 if desc_col + 1 < len(rows[0]) else len(rows[0]) - 1
+    
+    # Skip header row if it looks like one
+    start_row = 0
+    if len(rows) > 0:
+        first_row = rows[0]
+        if not any(" - " in cell for cell in first_row) and all(len(cell) < 30 for cell in first_row):
+            start_row = 1
+    
+    items = []
+    for row in rows[start_row:]:
+        if len(row) <= max(desc_col, branch_col, qty_col):
+            continue
         desc = row[desc_col].strip()
         if " - " not in desc:
             continue
-        # Parse quantity
+        branch = row[branch_col].strip()
         try:
             qty = float(row[qty_col])
         except:
             qty = 0
         if qty < 0:
             qty = 0
-        # Split description into parts
         parts = desc.split(" - ")
         if len(parts) >= 5:
-            all_items.append({
+            items.append({
                 "Branch": branch,
                 "Product": parts[0].strip(),
                 "Colour": parts[1].strip(),
@@ -179,10 +175,9 @@ def parse_inventory_auto(rows):
                 "MRP": parts[4].strip(),
                 "Quantity": qty
             })
-    return all_items
+    return items
 
 def build_inventory(all_items):
-    """Convert parsed items into branch-wise inventory dataframes."""
     if not all_items:
         return None, None
     df_items = pd.DataFrame(all_items)
@@ -215,7 +210,7 @@ def build_inventory(all_items):
     return complete_inventory, all_skus
 
 # ============================================
-# TRANSFER CALCULATION (unchanged)
+# TRANSFER CALCULATION
 # ============================================
 
 def calculate_all_transfers(complete_inventory, branches_config):
@@ -356,13 +351,17 @@ with st.sidebar:
 
 if uploaded_file:
     if "inventory_data" not in st.session_state or st.session_state.get("file_name") != uploaded_file.name:
-        with st.spinner("Automatically parsing and cleaning inventory data..."):
-            rows = read_csv_rows(uploaded_file)
-            all_items = parse_inventory_auto(rows)
-            if not all_items:
+        with st.spinner("Parsing inventory file (multiple strategies)..."):
+            content, encoding = read_file_with_fallback(uploaded_file)
+            items, method = parse_inventory_multi_method(content)
+            if not items:
                 st.error("Could not parse the file. Please ensure it contains product descriptions with ' - ' separators.")
+                with st.expander("🔍 Debug: First 5 lines of file"):
+                    lines = content.splitlines()[:5]
+                    for i, line in enumerate(lines):
+                        st.text(f"Line {i+1}: {line[:200]}")
                 st.stop()
-            complete_inventory, all_skus = build_inventory(all_items)
+            complete_inventory, all_skus = build_inventory(items)
             if complete_inventory is None:
                 st.stop()
             st.session_state.complete_inventory = complete_inventory
@@ -370,14 +369,13 @@ if uploaded_file:
             st.session_state.inventory_data = complete_inventory.copy()
             st.session_state.file_name = uploaded_file.name
             st.session_state.transfers_df = calculate_all_transfers(st.session_state.inventory_data, BRANCHES)
-            st.success(f"✅ Successfully loaded and cleaned {len(all_items)} product rows across all branches.")
+            st.success(f"✅ Loaded {len(items)} product rows using {method}. Encoding: {encoding}")
     
     # Use session data
     complete_inventory = st.session_state.complete_inventory
     inventory_data = st.session_state.inventory_data
     transfers_df = st.session_state.transfers_df
     
-    # Compute branch needs
     branch_needs = {}
     for branch in BRANCH_ORDER:
         if branch == "PRAGATHI SHOES":
@@ -387,11 +385,9 @@ if uploaded_file:
         total_needed = (target - df['Quantity']).clip(lower=0).sum()
         branch_needs[BRANCHES[branch]["name"]] = int(total_needed)
     
-    # Create tabs
     tab_names = ["📊 Dashboard", "🚚 All Transfers", "📋 Zero Stock Anywhere"] + [f"🏪 {BRANCHES[b]['name']}" for b in BRANCH_ORDER]
     tabs = st.tabs(tab_names)
     
-    # Tab 0: Dashboard
     with tabs[0]:
         st.subheader("Branch-wise Stock Needed Analysis")
         need_df = pd.DataFrame(list(branch_needs.items()), columns=["Branch", "Total Units Needed"])
@@ -401,7 +397,6 @@ if uploaded_file:
             pdf_data = generate_table_pdf(need_df, "Branch-wise Stock Needed Report", columns=["Branch", "Total Units Needed"])
             if pdf_data:
                 st.download_button("✅ Download PDF", pdf_data, "branch_needs.pdf")
-        
         st.markdown("---")
         st.subheader("Branch Stock Summary")
         summary = []
@@ -432,7 +427,6 @@ if uploaded_file:
             if pdf_data:
                 st.download_button("✅ Download PDF", pdf_data, "branch_summary.pdf")
     
-    # Tab 1: All Transfers
     with tabs[1]:
         if not transfers_df.empty:
             display_transfers = transfers_df[['From Branch', 'To Branch', 'Product', 'Size', 'Brand', 'Colour', 'Article', 'MRP', 'Transfer Qty']]
@@ -444,7 +438,6 @@ if uploaded_file:
         else:
             st.success("No transfers needed.")
     
-    # Tab 2: Zero Stock Anywhere
     with tabs[2]:
         zero_across_all = []
         first_branch_df = inventory_data[BRANCH_ORDER[0]]
@@ -479,7 +472,6 @@ if uploaded_file:
         else:
             st.success("All products have stock in at least one branch.")
     
-    # Branch-specific tabs
     for idx, branch in enumerate(BRANCH_ORDER):
         with tabs[idx + 3]:
             config = BRANCHES[branch]
@@ -487,8 +479,6 @@ if uploaded_file:
             if branch_df.empty:
                 st.info(f"No data for {config['name']}")
                 continue
-            
-            # Metrics
             col1, col2, col3, col4, col5 = st.columns(5)
             total_stock = int(branch_df['Quantity'].sum())
             sku_count = len(branch_df)
@@ -501,14 +491,12 @@ if uploaded_file:
             col4.metric("Low Stock", low_count)
             col5.metric("Surplus", surplus_count)
             
-            # Zero Stock Table with delete
             st.subheader("Table 1: Zero Stock Items")
             zero_stock = branch_df[branch_df['Quantity'] == 0].copy()
             if not zero_stock.empty:
                 search = st.text_input(f"🔍 Search Article Number", key=f"search_{branch}")
                 if search:
                     zero_stock = zero_stock[zero_stock['Article'].str.contains(search, case=False, na=False)]
-                
                 display_zero = zero_stock[['Product', 'Brand', 'Size', 'Colour', 'Article', 'MRP']].reset_index(drop=True)
                 display_zero.insert(0, "Select", False)
                 edited = st.data_editor(
@@ -536,7 +524,6 @@ if uploaded_file:
                         st.session_state.transfers_df = calculate_all_transfers(st.session_state.inventory_data, BRANCHES)
                         st.success(f"Reset {config['name']} to original data")
                         st.rerun()
-                
                 if st.button(f"📄 PDF - Zero Stock", key=f"zero_pdf_{branch}"):
                     pdf_data = generate_table_pdf(zero_stock[['Product', 'Brand', 'Size', 'Colour', 'Article', 'MRP']], 
                                                   f"{config['name']} - Zero Stock Items")
@@ -545,7 +532,6 @@ if uploaded_file:
             else:
                 st.success("No zero stock items")
             
-            # Low Stock Table
             st.subheader("Table 2: Low Stock Items")
             low_stock = branch_df[(branch_df['Quantity'] > 0) & (branch_df['Quantity'] < config['min'])].copy()
             if not low_stock.empty:
@@ -560,7 +546,6 @@ if uploaded_file:
             else:
                 st.success("No low stock items")
             
-            # Complete Inventory
             st.subheader("Table 3: Complete Inventory")
             full_display = branch_df[['Product', 'Brand', 'Size', 'Colour', 'Article', 'MRP', 'Quantity']].copy()
             full_display.rename(columns={'Quantity': 'Currently Available'}, inplace=True)
@@ -573,7 +558,6 @@ if uploaded_file:
                 if pdf_data:
                     st.download_button("✅ Download", pdf_data, f"{branch}_complete_inventory.pdf")
             
-            # Transfers
             branch_transfers = get_branch_transfers(transfers_df, branch)
             if not branch_transfers.empty:
                 st.subheader("Suggested Transfers (Send/Receive)")
@@ -588,9 +572,8 @@ else:
     st.info("👈 Upload your inventory CSV file (any format)")
     st.markdown("""
     ## How it works:
-    - **Automatically detects** product description, branch, and quantity columns.
-    - **Cleans and normalizes** data – no manual mapping needed.
-    - **Works with any CSV** that contains product descriptions with ` - ` separators.
-    - **Branch-specific** zero‑stock deletion (affects only that branch).
-    - **PDF reports** for every table.
+    - **Automatically detects** columns using multiple strategies.
+    - **Works with inconsistent column counts** (skips bad lines).
+    - **Handles different encodings** (UTF-8, Latin-1, etc.).
+    - **Shows debug info** if parsing fails.
     """)
