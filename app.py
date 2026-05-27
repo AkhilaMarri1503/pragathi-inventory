@@ -7,7 +7,7 @@ import re
 
 st.set_page_config(page_title="Universal Inventory Manager", layout="wide")
 st.title("📦 Universal Inventory Transfer System")
-st.markdown("**Works with CSV or Excel – auto‑detects columns**")
+st.markdown("**Works with Excel or CSV – robust header detection**")
 
 # ============================================
 # HELPER FUNCTIONS
@@ -46,26 +46,68 @@ def table_to_pdf(df, title, landscape=False):
     return pdf.output(dest='S').encode('latin-1', errors='ignore')
 
 # ============================================
-# UNIVERSAL PARSER (CSV + Excel)
+# ROBUST EXCEL PARSER – NO KEYERROR
 # ============================================
 
 def parse_excel(uploaded_file):
-    """Read the new SCHOOL STOCK.xlsx format."""
-    xl = pd.ExcelFile(uploaded_file)
-    df = xl.parse('Sheet1')  # data is on first sheet
-    # Rename columns if necessary (the file has exact names)
-    # Expected columns: Branch, Product, Brand, Artical, Size, Colour, Mrp, CLQTY
-    df.columns = df.columns.str.strip()
+    """Read Excel file, locate header row containing 'Branch', parse using column indices."""
+    # Read all data without header
+    df_raw = pd.read_excel(uploaded_file, sheet_name='Sheet1', header=None)
+    
+    # Find the row where the first column equals 'Branch'
+    header_row_idx = None
+    for i in range(len(df_raw)):
+        if df_raw.iloc[i, 0] == 'Branch':
+            header_row_idx = i
+            break
+    
+    if header_row_idx is None:
+        st.error("Could not find header row (expected 'Branch' in column A).")
+        return []
+    
+    # Get header values from that row
+    header_vals = df_raw.iloc[header_row_idx].tolist()
+    
+    # Map expected column names to their indices (case‑insensitive)
+    col_map = {}
+    for idx, val in enumerate(header_vals):
+        val_str = str(val).strip().lower()
+        if val_str == 'branch':
+            col_map['branch'] = idx
+        elif val_str == 'product':
+            col_map['product'] = idx
+        elif val_str == 'colour':
+            col_map['colour'] = idx
+        elif val_str == 'size':
+            col_map['size'] = idx
+        elif val_str == 'artical':
+            col_map['article'] = idx
+        elif val_str == 'mrp':
+            col_map['mrp'] = idx
+        elif val_str == 'clqty':
+            col_map['qty'] = idx
+    
+    # Verify required columns exist
+    required = ['branch', 'product', 'colour', 'size', 'article', 'mrp', 'qty']
+    missing = [r for r in required if r not in col_map]
+    if missing:
+        st.error(f"Missing columns in header: {missing}")
+        return []
+    
+    # Parse data rows (from the row after header)
     items = []
-    for _, row in df.iterrows():
-        branch = clean_text(row['Branch'])
-        product = clean_text(row['Product'])
-        colour = clean_text(row['Colour'])
-        size = clean_text(row['Size'])
-        article = clean_text(row['Artical'])
-        mrp = clean_text(row['Mrp'])
+    for i in range(header_row_idx + 1, len(df_raw)):
+        row = df_raw.iloc[i]
+        branch = clean_text(row[col_map['branch']])
+        if not branch:   # skip empty branch rows
+            continue
+        product = clean_text(row[col_map['product']])
+        colour = clean_text(row[col_map['colour']])
+        size = clean_text(row[col_map['size']])
+        article = clean_text(row[col_map['article']])
+        mrp = clean_text(row[col_map['mrp']])
         try:
-            qty = float(row['CLQTY'])
+            qty = float(row[col_map['qty']])
         except:
             qty = 0
         if qty <= 0:
@@ -81,9 +123,12 @@ def parse_excel(uploaded_file):
         })
     return items
 
+# ============================================
+# CSV PARSERS (for compatibility)
+# ============================================
+
 def parse_csv_structured(df):
     """Try to parse CSV as structured (with headers)."""
-    # Look for branch, description, quantity columns
     branch_col = None
     desc_col = None
     qty_col = None
@@ -95,7 +140,6 @@ def parse_csv_structured(df):
         if 'quantity' in col.lower() or 'closing' in col.lower():
             qty_col = col
     if desc_col is None:
-        # find any column with " - "
         for col in df.columns:
             if df[col].astype(str).str.contains(" - ").any():
                 desc_col = col
@@ -194,13 +238,16 @@ def parse_csv_ragged(rows):
             })
     return items
 
+# ============================================
+# MAIN LOADER
+# ============================================
+
 def load_inventory(uploaded_file):
-    """Main loader: detect file type and call appropriate parser."""
     file_ext = uploaded_file.name.split('.')[-1].lower()
     if file_ext == 'xlsx':
         items = parse_excel(uploaded_file)
         method = "Excel"
-    else:  # csv
+    else:
         # Try structured CSV first
         df = pd.read_csv(uploaded_file)
         items = parse_csv_structured(df)
@@ -223,7 +270,6 @@ def load_inventory(uploaded_file):
     if not items:
         st.error("No valid product rows found.")
         return None, None, [], method
-    # Build inventory dictionary
     df_items = pd.DataFrame(items)
     df_items['SKU'] = df_items.apply(lambda x: f"{x['Product']}|{x['Colour']}|{x['Size']}|{x['Article']}|{x['MRP']}", axis=1)
     all_skus = df_items['SKU'].unique()
@@ -386,7 +432,6 @@ if st.session_state.loaded and st.session_state.branches:
     targets = st.session_state.targets
     transfers = st.session_state.transfers
 
-    # Branch needs
     needs = {b: max(0, targets[b] - inv[b]['Quantity'].sum()) for b in branches}
 
     tab_names = ["📊 Dashboard", "🚚 All Transfers", "📋 Zero Stock Anywhere"] + [f"🏪 {b}" for b in branches]
@@ -483,7 +528,6 @@ if st.session_state.loaded and st.session_state.branches:
             tgt = targets[branch]
             min_level = max(1, tgt // 2)
 
-            # Metrics
             c1, c2, c3, c4, c5 = st.columns(5)
             c1.metric("Total Stock", int(branch_df['Quantity'].sum()))
             c2.metric("SKUs", len(branch_df))
@@ -491,7 +535,7 @@ if st.session_state.loaded and st.session_state.branches:
             c4.metric("Low Stock", len(branch_df[(branch_df['Quantity'] > 0) & (branch_df['Quantity'] < min_level)]))
             c5.metric("Surplus", len(branch_df[branch_df['Quantity'] > tgt]))
 
-            # Zero Stock Table with search & delete
+            # Zero Stock Table
             st.subheader("Table 1: Zero Stock Items")
             zero = branch_df[branch_df['Quantity'] == 0].copy()
             if not zero.empty:
@@ -560,7 +604,7 @@ if st.session_state.loaded and st.session_state.branches:
                 if pdf:
                     st.download_button("Download", pdf, f"{branch}_full.pdf")
 
-            # Transfers involving this branch
+            # Transfers
             br_trans = get_branch_transfers(transfers, branch)
             if not br_trans.empty:
                 st.subheader("Suggested Transfers")
@@ -572,17 +616,17 @@ if st.session_state.loaded and st.session_state.branches:
                         st.download_button("Download", pdf, f"{branch}_transfers.pdf")
 
 else:
-    st.info("👈 Upload your inventory file (CSV or Excel)")
+    st.info("👈 Upload your inventory file (Excel or CSV)")
     st.markdown("""
     ## Universal Inventory Transfer System
 
-    **Supports:**
-    - Your new `SCHOOL STOCK.xlsx` (Excel)
-    - The old structured `SCHOOL_STOCK_FULL_STRUCTURED.csv`
-    - The original ragged `SCHOOL STOCK.csv`
+    **Supported files:**
+    - Excel (`.xlsx`) – your `SCHOOL STOCK.xlsx`
+    - Structured CSV with headers
+    - Original ragged CSV (fallback)
 
     ### Features
-    - Auto‑detects file type and column layout
+    - Auto‑detects header row by looking for 'Branch' in column A
     - Branch‑wise stock needed analysis
     - Intelligent transfers (surplus → deficit, including warehouse)
     - Per‑branch zero‑stock deletion (search by article, multi‑select, reset)
