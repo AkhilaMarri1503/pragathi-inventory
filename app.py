@@ -10,6 +10,7 @@ uploaded_file = st.file_uploader("Choose an Excel file", type=["xlsx"])
 if uploaded_file is not None:
     with st.spinner("Generating report... This may take a moment."):
         try:
+            # Pass the uploaded file directly to the function
             excel_bytes = generate_inventory_report(uploaded_file)
             st.success("✅ Report generated successfully!")
             st.download_button(
