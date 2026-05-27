@@ -16,14 +16,12 @@ st.markdown("**Works with any CSV file containing product descriptions with ' - 
 # BRANCH CONFIGURATION (fallback names)
 # ============================================
 
-# Known branch names for auto-detection
 KNOWN_BRANCHES = [
     "POPULAR SHOE COMPANY", "PRAGATHI SHOES AMD 2", "PRAGATHI SHOES RAGOLU",
     "PRAGATHI SHOES BALAGA", "PRAGATHI SHOES AKP", "PRAGATHI SHOES",
     "POPULAR", "AMD 2", "RAGOLU", "BALAGA", "AKP", "WAREHOUSE"
 ]
 
-# Target stock levels (user can modify)
 BRANCH_TARGETS = {}
 
 def clean_text(text):
@@ -59,8 +57,6 @@ def read_file_with_fallback(uploaded_file):
     return content, 'utf-8 (with ignore)'
 
 def parse_any_csv(content):
-    """Parse any CSV, auto-detect columns, return list of product dicts."""
-    # Try csv.reader (handles quoted commas)
     try:
         csv_reader = csv.reader(io.StringIO(content))
         rows = list(csv_reader)
@@ -71,7 +67,6 @@ def parse_any_csv(content):
     except:
         pass
     
-    # Fallback: simple split
     try:
         lines = content.splitlines()
         rows = [line.split(',') for line in lines]
@@ -84,11 +79,9 @@ def parse_any_csv(content):
     return [], "none"
 
 def parse_rows_universal(rows):
-    """Auto-detect description, branch, quantity columns and parse all data rows."""
     if not rows:
         return []
     
-    # Find the first row that contains " - " (data row, not header)
     first_data_idx = None
     for i, row in enumerate(rows):
         for cell in row:
@@ -101,35 +94,28 @@ def parse_rows_universal(rows):
     if first_data_idx is None:
         return []
     
-    # Use that row to detect column indices
     data_row = rows[first_data_idx]
     num_cols = len(data_row)
     
-    # 1. Find description column: contains " - "
     desc_col = None
     for col in range(num_cols):
         if " - " in data_row[col]:
             desc_col = col
             break
-    
     if desc_col is None:
         return []
     
-    # 2. Find branch column: look for known branch names in the same row
     branch_col = None
     for col in range(num_cols):
         cell = data_row[col].strip()
         if any(branch in cell for branch in KNOWN_BRANCHES):
             branch_col = col
             break
-    
-    # Fallback: branch column is often immediately before description
     if branch_col is None and desc_col > 0:
         branch_col = desc_col - 1
     else:
-        branch_col = 0  # fallback to first column
+        branch_col = 0
     
-    # 3. Find quantity column: numeric, not the description column
     qty_col = None
     for col in range(num_cols):
         if col == desc_col:
@@ -141,15 +127,12 @@ def parse_rows_universal(rows):
                 break
         except:
             pass
-    
     if qty_col is None:
-        # Fallback: assume quantity is after description
         if desc_col + 1 < num_cols:
             qty_col = desc_col + 1
         else:
             qty_col = num_cols - 1
     
-    # Now parse all rows from first_data_idx onward
     items = []
     for row in rows[first_data_idx:]:
         if len(row) <= max(desc_col, branch_col, qty_col):
@@ -179,13 +162,11 @@ def parse_rows_universal(rows):
 
 def build_inventory(all_items):
     if not all_items:
-        return None, None
+        return None, None, None
     df_items = pd.DataFrame(all_items)
     df_items['SKU'] = df_items.apply(lambda x: f"{x['Product']}|{x['Colour']}|{x['Size']}|{x['Article']}|{x['MRP']}", axis=1)
     all_skus = df_items['SKU'].unique()
-    # Get unique branch names from data
     unique_branches = df_items['Branch'].unique()
-    # Create inventory dict for each branch
     complete_inventory = {}
     for branch in unique_branches:
         branch_data = df_items[df_items['Branch'] == branch]
@@ -206,14 +187,7 @@ def build_inventory(all_items):
                 "Brand": get_brand(sku_row['Product'])
             })
         complete_inventory[branch] = pd.DataFrame(branch_records)
-        # Initialize target stock level for this branch (default 8)
-        if branch not in BRANCH_TARGETS:
-            BRANCH_TARGETS[branch] = 8
     return complete_inventory, all_skus, unique_branches
-
-# ============================================
-# TRANSFER CALCULATION (dynamic branches)
-# ============================================
 
 def calculate_all_transfers(complete_inventory, branch_targets):
     all_transfers = []
@@ -320,10 +294,6 @@ def generate_table_pdf(dataframe, title, columns=None, landscape=False):
         pdf.ln()
     return pdf.output(dest='S').encode('latin-1', errors='ignore')
 
-# ============================================
-# SESSION STATE MANAGEMENT
-# ============================================
-
 def reset_session():
     for key in list(st.session_state.keys()):
         del st.session_state[key]
@@ -337,7 +307,6 @@ with st.sidebar:
     st.header("⚙️ Configuration")
     st.markdown("**Target Stock Levels**")
     st.info("Set desired stock per branch (adjust as needed)")
-    # Targets will be populated after file load
     st.divider()
     uploaded_file = st.file_uploader("📁 Upload Inventory CSV (any format)", type=["csv"])
     if st.button("🔄 Reset All Data"):
@@ -348,7 +317,8 @@ with st.sidebar:
 # ============================================
 
 if uploaded_file:
-    if "inventory_data" not in st.session_state or st.session_state.get("file_name") != uploaded_file.name:
+    # Check if we need to load new data (first time or different file)
+    if "file_name" not in st.session_state or st.session_state.file_name != uploaded_file.name:
         with st.spinner("Parsing inventory file (auto-detecting columns)..."):
             content, encoding = read_file_with_fallback(uploaded_file)
             items, method = parse_any_csv(content)
@@ -362,19 +332,25 @@ if uploaded_file:
             complete_inventory, all_skus, branches = build_inventory(items)
             if complete_inventory is None:
                 st.stop()
+            # Initialize branch targets
+            branch_targets = {}
+            for branch in branches:
+                branch_targets[branch] = 8
+            # Store in session state
             st.session_state.complete_inventory = complete_inventory
             st.session_state.all_skus = all_skus
             st.session_state.branches = list(branches)
             st.session_state.inventory_data = complete_inventory.copy()
+            st.session_state.branch_targets = branch_targets
             st.session_state.file_name = uploaded_file.name
-            # Initialize branch targets
-            for branch in branches:
-                if branch not in BRANCH_TARGETS:
-                    BRANCH_TARGETS[branch] = 8
-            st.session_state.branch_targets = BRANCH_TARGETS.copy()
-            st.session_state.transfers_df = calculate_all_transfers(st.session_state.inventory_data, st.session_state.branch_targets)
+            st.session_state.transfers_df = calculate_all_transfers(st.session_state.inventory_data, branch_targets)
             st.success(f"✅ Loaded {len(items)} product rows from {len(branches)} branches. Detection method: {method}")
             st.rerun()
+    
+    # Ensure session state variables exist before using them (safety check)
+    if "branches" not in st.session_state:
+        st.info("Processing... Please wait.")
+        st.stop()
     
     # Load from session
     complete_inventory = st.session_state.complete_inventory
@@ -402,7 +378,7 @@ if uploaded_file:
         total_needed = (target - df['Quantity']).clip(lower=0).sum()
         branch_needs[branch] = int(total_needed)
     
-    # Create tabs: Dashboard, All Transfers, Zero Stock Anywhere, then each branch
+    # Create tabs
     tab_names = ["📊 Dashboard", "🚚 All Transfers", "📋 Zero Stock Anywhere"] + [f"🏪 {branch}" for branch in branches]
     tabs = st.tabs(tab_names)
     
@@ -500,9 +476,8 @@ if uploaded_file:
                 st.info(f"No data for {branch}")
                 continue
             target = branch_targets[branch]
-            min_level = max(1, target // 2)  # low stock threshold = half of target
+            min_level = max(1, target // 2)
             
-            # Metrics
             col1, col2, col3, col4, col5 = st.columns(5)
             total_stock = int(branch_df['Quantity'].sum())
             sku_count = len(branch_df)
@@ -515,7 +490,6 @@ if uploaded_file:
             col4.metric("Low Stock", low_count)
             col5.metric("Surplus", surplus_count)
             
-            # Zero Stock Table
             st.subheader("Zero Stock Items")
             zero_stock = branch_df[branch_df['Quantity'] == 0].copy()
             if not zero_stock.empty:
@@ -556,7 +530,6 @@ if uploaded_file:
             else:
                 st.success("No zero stock items")
             
-            # Low Stock Table
             st.subheader("Low Stock Items")
             low_stock = branch_df[(branch_df['Quantity'] > 0) & (branch_df['Quantity'] < min_level)].copy()
             if not low_stock.empty:
@@ -572,7 +545,6 @@ if uploaded_file:
             else:
                 st.success("No low stock items")
             
-            # Complete Inventory
             st.subheader("Complete Inventory")
             full_display = branch_df[['Product', 'Brand', 'Size', 'Colour', 'Article', 'MRP', 'Quantity']].copy()
             full_display.rename(columns={'Quantity': 'Currently Available'}, inplace=True)
@@ -585,7 +557,6 @@ if uploaded_file:
                 if pdf_data:
                     st.download_button("✅ Download", pdf_data, f"{branch}_complete_inventory.pdf")
             
-            # Transfers for this branch
             branch_transfers = get_branch_transfers(transfers_df, branch)
             if not branch_transfers.empty:
                 st.subheader("Suggested Transfers (Send/Receive)")
