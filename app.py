@@ -4,7 +4,6 @@ import numpy as np
 from fpdf import FPDF
 from datetime import datetime
 import re
-import csv
 import io
 
 st.set_page_config(page_title="Universal Inventory Transfer System", layout="wide")
@@ -13,7 +12,7 @@ st.title("📦 Universal Inventory Transfer System")
 st.markdown("**Works with any CSV file containing product descriptions with ' - ' separators**")
 
 # ============================================
-# BRANCH CONFIGURATION (fallback names)
+# BRANCH CONFIGURATION
 # ============================================
 
 KNOWN_BRANCHES = [
@@ -40,10 +39,103 @@ def get_brand(product):
         return "Unisex"
 
 # ============================================
-# UNIVERSAL CSV PARSER
+# LINE‑BASED PARSER (BYPASSES CSV ISSUES)
 # ============================================
 
-def read_file_with_fallback(uploaded_file):
+def parse_raw_lines(content):
+    """Parse raw file content line by line, looking for ' - '."""
+    lines = content.splitlines()
+    items = []
+    
+    # First pass: find the first line that contains " - "
+    data_start = None
+    for i, line in enumerate(lines):
+        if " - " in line:
+            data_start = i
+            break
+    
+    if data_start is None:
+        return items, None, None, None
+    
+    # Now, try to detect column indices by analyzing the first data line
+    sample_line = lines[data_start]
+    # Split by comma (simple split, but preserve quoted parts)
+    # We'll use a simple regex to split on commas that are not inside quotes
+    fields = re.split(r',(?=(?:[^"]*"[^"]*")*[^"]*$)', sample_line)
+    fields = [f.strip().strip('"') for f in fields]
+    
+    # Find description column (contains " - ")
+    desc_idx = None
+    for i, f in enumerate(fields):
+        if " - " in f:
+            desc_idx = i
+            break
+    
+    if desc_idx is None:
+        return items, None, None, None
+    
+    # Find branch column: look for known branch names
+    branch_idx = None
+    for i, f in enumerate(fields):
+        if any(branch in f for branch in KNOWN_BRANCHES):
+            branch_idx = i
+            break
+    if branch_idx is None and desc_idx > 0:
+        branch_idx = desc_idx - 1  # often before description
+    else:
+        branch_idx = 0
+    
+    # Find quantity column: look for a numeric field (not the description)
+    qty_idx = None
+    for i, f in enumerate(fields):
+        if i == desc_idx:
+            continue
+        try:
+            val = float(f)
+            if val >= 0:
+                qty_idx = i
+                break
+        except:
+            pass
+    if qty_idx is None and desc_idx + 1 < len(fields):
+        qty_idx = desc_idx + 1
+    else:
+        qty_idx = len(fields) - 1
+    
+    # Now parse all lines from data_start onward
+    for line in lines[data_start:]:
+        if not line.strip():
+            continue
+        # Split line respecting quotes
+        parts = re.split(r',(?=(?:[^"]*"[^"]*")*[^"]*$)', line)
+        parts = [p.strip().strip('"') for p in parts]
+        if len(parts) <= max(desc_idx, branch_idx, qty_idx):
+            continue
+        desc = parts[desc_idx]
+        if " - " not in desc:
+            continue
+        branch = parts[branch_idx]
+        try:
+            qty = float(parts[qty_idx])
+        except:
+            qty = 0
+        if qty < 0:
+            qty = 0
+        parts_desc = desc.split(" - ")
+        if len(parts_desc) >= 5:
+            items.append({
+                "Branch": branch,
+                "Product": parts_desc[0].strip(),
+                "Colour": parts_desc[1].strip(),
+                "Size": parts_desc[2].strip(),
+                "Article": parts_desc[3].strip(),
+                "MRP": parts_desc[4].strip(),
+                "Quantity": qty
+            })
+    
+    return items, desc_idx, branch_idx, qty_idx
+
+def read_file_content(uploaded_file):
     raw_bytes = uploaded_file.getvalue()
     for encoding in ['utf-8', 'latin-1', 'cp1252', 'iso-8859-1']:
         try:
@@ -53,116 +145,6 @@ def read_file_with_fallback(uploaded_file):
             continue
     content = raw_bytes.decode('utf-8', errors='ignore')
     return content, 'utf-8 (with ignore)'
-
-def parse_any_csv(content):
-    try:
-        csv_reader = csv.reader(io.StringIO(content))
-        rows = list(csv_reader)
-        if rows:
-            items = parse_rows_universal(rows)
-            if items:
-                return items, "csv.reader"
-    except:
-        pass
-    
-    try:
-        lines = content.splitlines()
-        rows = [line.split(',') for line in lines]
-        items = parse_rows_universal(rows)
-        if items:
-            return items, "simple split"
-    except:
-        pass
-    
-    return [], "none"
-
-def parse_rows_universal(rows):
-    if not rows:
-        return []
-    
-    # Find first row containing " - "
-    first_data_idx = None
-    for i, row in enumerate(rows):
-        for cell in row:
-            if " - " in cell:
-                first_data_idx = i
-                break
-        if first_data_idx is not None:
-            break
-    
-    if first_data_idx is None:
-        return []
-    
-    data_row = rows[first_data_idx]
-    num_cols = len(data_row)
-    
-    # Find description column
-    desc_col = None
-    for col in range(num_cols):
-        if " - " in data_row[col]:
-            desc_col = col
-            break
-    
-    if desc_col is None:
-        return []
-    
-    # Find branch column (prefer known branch names, else fallback to column before description)
-    branch_col = None
-    for col in range(num_cols):
-        cell = data_row[col].strip()
-        if any(branch in cell for branch in KNOWN_BRANCHES):
-            branch_col = col
-            break
-    if branch_col is None and desc_col > 0:
-        branch_col = desc_col - 1
-    else:
-        branch_col = 0
-    
-    # Find quantity column (numeric, not description)
-    qty_col = None
-    for col in range(num_cols):
-        if col == desc_col:
-            continue
-        try:
-            val = float(data_row[col])
-            if val >= 0:
-                qty_col = col
-                break
-        except:
-            pass
-    if qty_col is None:
-        if desc_col + 1 < num_cols:
-            qty_col = desc_col + 1
-        else:
-            qty_col = num_cols - 1
-    
-    # Parse all rows from first_data_idx onward
-    items = []
-    for row in rows[first_data_idx:]:
-        if len(row) <= max(desc_col, branch_col, qty_col):
-            continue
-        branch = row[branch_col].strip()
-        desc = row[desc_col].strip()
-        if " - " not in desc:
-            continue
-        try:
-            qty = float(row[qty_col])
-        except:
-            qty = 0
-        if qty < 0:
-            qty = 0
-        parts = desc.split(" - ")
-        if len(parts) >= 5:
-            items.append({
-                "Branch": branch,
-                "Product": parts[0].strip(),
-                "Colour": parts[1].strip(),
-                "Size": parts[2].strip(),
-                "Article": parts[3].strip(),
-                "MRP": parts[4].strip(),
-                "Quantity": qty
-            })
-    return items
 
 def build_inventory(all_items):
     if not all_items:
@@ -299,7 +281,7 @@ def generate_table_pdf(dataframe, title, columns=None, landscape=False):
     return pdf.output(dest='S').encode('latin-1', errors='ignore')
 
 # ============================================
-# SESSION STATE INITIALIZATION (CRITICAL FIX)
+# SESSION STATE
 # ============================================
 
 if "inventory_loaded" not in st.session_state:
@@ -310,6 +292,10 @@ if "inventory_loaded" not in st.session_state:
     st.session_state.branch_targets = {}
     st.session_state.transfers_df = pd.DataFrame()
     st.session_state.file_name = None
+    st.session_state.manual_mode = False
+    st.session_state.manual_desc = 0
+    st.session_state.manual_branch = 0
+    st.session_state.manual_qty = 0
 
 # ============================================
 # SIDEBAR
@@ -323,10 +309,10 @@ with st.sidebar:
     if st.session_state.inventory_loaded and st.session_state.branches:
         st.subheader("Branch Targets")
         for branch in st.session_state.branches:
-            current_target = st.session_state.branch_targets.get(branch, 8)
-            new_target = st.number_input(f"Target stock for {branch}", min_value=1, max_value=100, value=current_target, key=f"target_{branch}")
-            if new_target != current_target:
-                st.session_state.branch_targets[branch] = new_target
+            current = st.session_state.branch_targets.get(branch, 8)
+            new_val = st.number_input(f"Target for {branch}", min_value=1, max_value=100, value=current, key=f"target_{branch}")
+            if new_val != current:
+                st.session_state.branch_targets[branch] = new_val
                 st.session_state.transfers_df = calculate_all_transfers(st.session_state.inventory_data, st.session_state.branch_targets)
                 st.rerun()
     
@@ -340,39 +326,118 @@ with st.sidebar:
 # ============================================
 
 if uploaded_file:
-    # Check if file is new
+    # Check if file changed
     if st.session_state.file_name != uploaded_file.name or not st.session_state.inventory_loaded:
-        with st.spinner("Parsing inventory file (auto-detecting columns)..."):
-            content, encoding = read_file_with_fallback(uploaded_file)
-            items, method = parse_any_csv(content)
+        with st.spinner("Parsing inventory file..."):
+            content, encoding = read_file_content(uploaded_file)
+            items, auto_desc, auto_branch, auto_qty = parse_raw_lines(content)
             
             if not items:
-                st.error("Could not parse the file. Ensure it contains product descriptions with ' - ' (e.g., 'Product - Colour - Size - Article - MRP').")
-                with st.expander("🔍 Debug: First 5 lines"):
-                    lines = content.splitlines()[:5]
-                    for i, line in enumerate(lines):
-                        st.text(f"Line {i+1}: {line[:200]}")
+                # Auto-detection failed, show manual column selection
+                st.warning("Auto-detection failed. Please manually select the correct columns.")
+                st.session_state.manual_mode = True
+                st.session_state.raw_content = content
+                # Show a preview of the first few data lines
+                lines = content.splitlines()
+                # Find first line with " - "
+                data_start = None
+                for i, line in enumerate(lines):
+                    if " - " in line:
+                        data_start = i
+                        break
+                if data_start is not None:
+                    sample_lines = lines[data_start:data_start+3]
+                    st.subheader("Preview of product data rows (first 3):")
+                    for i, line in enumerate(sample_lines):
+                        st.code(line, language='text')
+                else:
+                    st.error("No line contains ' - '. Please check the file format.")
+                    st.stop()
+                
+                # Let user set column indices
+                st.subheader("Column Mapping")
+                # We need to parse one sample line to show fields
+                sample_line = lines[data_start] if data_start is not None else lines[0]
+                fields = re.split(r',(?=(?:[^"]*"[^"]*")*[^"]*$)', sample_line)
+                fields = [f.strip().strip('"') for f in fields]
+                st.write(f"Found {len(fields)} fields in a sample row:")
+                for i, f in enumerate(fields):
+                    st.write(f"  {i}: {f[:50]}")
+                
+                desc_idx = st.number_input("Description column index (contains ' - ')", min_value=0, max_value=len(fields)-1, value=auto_desc if auto_desc is not None else 0)
+                branch_idx = st.number_input("Branch column index", min_value=0, max_value=len(fields)-1, value=auto_branch if auto_branch is not None else 0)
+                qty_idx = st.number_input("Quantity column index (numeric)", min_value=0, max_value=len(fields)-1, value=auto_qty if auto_qty is not None else 1)
+                
+                if st.button("✅ Parse with these columns"):
+                    # Re-parse using manual indices
+                    lines = content.splitlines()
+                    new_items = []
+                    for line in lines:
+                        if " - " not in line:
+                            continue
+                        parts = re.split(r',(?=(?:[^"]*"[^"]*")*[^"]*$)', line)
+                        parts = [p.strip().strip('"') for p in parts]
+                        if len(parts) <= max(desc_idx, branch_idx, qty_idx):
+                            continue
+                        desc = parts[desc_idx]
+                        if " - " not in desc:
+                            continue
+                        branch = parts[branch_idx]
+                        try:
+                            qty = float(parts[qty_idx])
+                        except:
+                            qty = 0
+                        if qty < 0:
+                            qty = 0
+                        parts_desc = desc.split(" - ")
+                        if len(parts_desc) >= 5:
+                            new_items.append({
+                                "Branch": branch,
+                                "Product": parts_desc[0].strip(),
+                                "Colour": parts_desc[1].strip(),
+                                "Size": parts_desc[2].strip(),
+                                "Article": parts_desc[3].strip(),
+                                "MRP": parts_desc[4].strip(),
+                                "Quantity": qty
+                            })
+                    items = new_items
+                    if not items:
+                        st.error("Still no valid items. Please check column indices.")
+                        st.stop()
+                    st.success(f"Parsed {len(items)} items with manual mapping.")
+                    st.session_state.manual_mode = False
+                    # Proceed to build inventory
+                    complete_inventory, all_skus, branches = build_inventory(items)
+                    if complete_inventory is None:
+                        st.stop()
+                    branch_targets = {branch: 8 for branch in branches}
+                    transfers_df = calculate_all_transfers(complete_inventory, branch_targets)
+                    st.session_state.complete_inventory = complete_inventory
+                    st.session_state.inventory_data = complete_inventory.copy()
+                    st.session_state.branches = branches
+                    st.session_state.branch_targets = branch_targets
+                    st.session_state.transfers_df = transfers_df
+                    st.session_state.file_name = uploaded_file.name
+                    st.session_state.inventory_loaded = True
+                    st.rerun()
                 st.stop()
-            
-            complete_inventory, all_skus, branches = build_inventory(items)
-            if complete_inventory is None:
-                st.stop()
-            
-            # Initialize targets (default 8)
-            branch_targets = {branch: 8 for branch in branches}
-            transfers_df = calculate_all_transfers(complete_inventory, branch_targets)
-            
-            # Store in session
-            st.session_state.complete_inventory = complete_inventory
-            st.session_state.inventory_data = complete_inventory.copy()
-            st.session_state.branches = branches
-            st.session_state.branch_targets = branch_targets
-            st.session_state.transfers_df = transfers_df
-            st.session_state.file_name = uploaded_file.name
-            st.session_state.inventory_loaded = True
-            
-            st.success(f"✅ Loaded {len(items)} product rows from {len(branches)} branches. Detection method: {method}")
-            st.rerun()
+            else:
+                # Auto-detection succeeded
+                st.session_state.manual_mode = False
+                complete_inventory, all_skus, branches = build_inventory(items)
+                if complete_inventory is None:
+                    st.stop()
+                branch_targets = {branch: 8 for branch in branches}
+                transfers_df = calculate_all_transfers(complete_inventory, branch_targets)
+                st.session_state.complete_inventory = complete_inventory
+                st.session_state.inventory_data = complete_inventory.copy()
+                st.session_state.branches = branches
+                st.session_state.branch_targets = branch_targets
+                st.session_state.transfers_df = transfers_df
+                st.session_state.file_name = uploaded_file.name
+                st.session_state.inventory_loaded = True
+                st.success(f"✅ Loaded {len(items)} product rows from {len(branches)} branches. Encoding: {encoding}")
+                st.rerun()
     
     # Display content if loaded
     if st.session_state.inventory_loaded and st.session_state.branches:
@@ -390,11 +455,10 @@ if uploaded_file:
             total_needed = (target - df['Quantity']).clip(lower=0).sum()
             branch_needs[branch] = int(total_needed)
         
-        # Create tabs
         tab_names = ["📊 Dashboard", "🚚 All Transfers", "📋 Zero Stock Anywhere"] + [f"🏪 {branch}" for branch in branches]
         tabs = st.tabs(tab_names)
         
-        # Dashboard tab
+        # Dashboard
         with tabs[0]:
             st.subheader("Branch-wise Stock Needed Analysis")
             need_df = pd.DataFrame(list(branch_needs.items()), columns=["Branch", "Total Units Needed"])
@@ -404,7 +468,6 @@ if uploaded_file:
                 pdf_data = generate_table_pdf(need_df, "Branch-wise Stock Needed Report", columns=["Branch", "Total Units Needed"])
                 if pdf_data:
                     st.download_button("✅ Download PDF", pdf_data, "branch_needs.pdf")
-            
             st.markdown("---")
             st.subheader("Branch Stock Summary")
             summary = []
@@ -433,7 +496,7 @@ if uploaded_file:
                 if pdf_data:
                     st.download_button("✅ Download PDF", pdf_data, "branch_summary.pdf")
         
-        # All Transfers tab
+        # All Transfers
         with tabs[1]:
             if not transfers_df.empty:
                 display_transfers = transfers_df[['From Branch', 'To Branch', 'Product', 'Size', 'Brand', 'Colour', 'Article', 'MRP', 'Transfer Qty']]
@@ -445,7 +508,7 @@ if uploaded_file:
             else:
                 st.success("No transfers needed.")
         
-        # Zero Stock Anywhere tab
+        # Zero Stock Anywhere
         with tabs[2]:
             zero_across_all = []
             if branches:
@@ -491,7 +554,6 @@ if uploaded_file:
                 target = branch_targets[branch]
                 min_level = max(1, target // 2)
                 
-                # Metrics
                 col1, col2, col3, col4, col5 = st.columns(5)
                 total_stock = int(branch_df['Quantity'].sum())
                 sku_count = len(branch_df)
@@ -504,7 +566,6 @@ if uploaded_file:
                 col4.metric("Low Stock", low_count)
                 col5.metric("Surplus", surplus_count)
                 
-                # Zero Stock Table
                 st.subheader("Zero Stock Items")
                 zero_stock = branch_df[branch_df['Quantity'] == 0].copy()
                 if not zero_stock.empty:
@@ -545,7 +606,6 @@ if uploaded_file:
                 else:
                     st.success("No zero stock items")
                 
-                # Low Stock Table
                 st.subheader("Low Stock Items")
                 low_stock = branch_df[(branch_df['Quantity'] > 0) & (branch_df['Quantity'] < min_level)].copy()
                 if not low_stock.empty:
@@ -561,7 +621,6 @@ if uploaded_file:
                 else:
                     st.success("No low stock items")
                 
-                # Complete Inventory
                 st.subheader("Complete Inventory")
                 full_display = branch_df[['Product', 'Brand', 'Size', 'Colour', 'Article', 'MRP', 'Quantity']].copy()
                 full_display.rename(columns={'Quantity': 'Currently Available'}, inplace=True)
@@ -574,7 +633,6 @@ if uploaded_file:
                     if pdf_data:
                         st.download_button("✅ Download", pdf_data, f"{branch}_complete_inventory.pdf")
                 
-                # Transfers for this branch
                 branch_transfers = get_branch_transfers(transfers_df, branch)
                 if not branch_transfers.empty:
                     st.subheader("Suggested Transfers (Send/Receive)")
@@ -596,8 +654,9 @@ else:
     - A column with quantities (numeric)
     
     ### Features:
-    - **Auto-detects** columns (no manual mapping needed)
-    - **Handles** ragged rows, different encodings, quoted fields
+    - **Auto-detects** columns using raw line scanning (bypasses CSV parsing issues)
+    - **Manual column mapping** if auto-detection fails
+    - **Handles ragged rows, different encodings, quoted fields**
     - **Branch-wise** zero‑stock deletion (affects only that branch)
     - **PDF reports** for every table
     - **Dynamic target levels** per branch (adjust in sidebar)
