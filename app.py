@@ -49,7 +49,7 @@ def get_brand(product):
         return "Pragathi"
 
 # ============================================
-# ULTRA-ROBUST CSV PARSER – FIXED HEADER SKIP
+# ROBUST PARSER – FINAL VERSION
 # ============================================
 
 def read_file_with_fallback(uploaded_file):
@@ -66,7 +66,7 @@ def read_file_with_fallback(uploaded_file):
 def parse_inventory_multi_method(content):
     all_items = []
     
-    # Strategy 1: csv.reader
+    # Strategy 1: csv.reader (handles quoted commas)
     try:
         csv_reader = csv.reader(io.StringIO(content))
         rows = list(csv_reader)
@@ -77,17 +77,7 @@ def parse_inventory_multi_method(content):
     except:
         pass
     
-    # Strategy 2: pandas
-    try:
-        df = pd.read_csv(io.StringIO(content), on_bad_lines='skip', engine='python')
-        rows = df.astype(str).values.tolist()
-        items = parse_from_rows(rows)
-        if items:
-            return items, "pandas"
-    except:
-        pass
-    
-    # Strategy 3: simple split
+    # Strategy 2: simple split (fallback)
     try:
         lines = content.splitlines()
         rows = [line.split(',') for line in lines]
@@ -100,79 +90,36 @@ def parse_inventory_multi_method(content):
     return [], "none"
 
 def parse_from_rows(rows):
-    """Find first data row containing ' - ' and parse all subsequent rows."""
+    """Find first data row (contains ' - ') and parse using fixed column indices."""
     if not rows:
         return []
     
-    # Find the first row that contains " - " in any column
-    first_data_row_idx = None
+    # Find the first row that contains " - " in ANY column
+    data_start_idx = None
     for i, row in enumerate(rows):
-        for col in range(len(row)):
-            if " - " in row[col]:
-                first_data_row_idx = i
+        for cell in row:
+            if " - " in cell:
+                data_start_idx = i
                 break
-        if first_data_row_idx is not None:
+        if data_start_idx is not None:
             break
     
-    if first_data_row_idx is None:
+    if data_start_idx is None:
         return []
     
-    # Use that row to detect column indices
-    data_row = rows[first_data_row_idx]
+    # Fixed column indices (from your original file structure)
+    branch_col = 15
+    desc_col = 16
+    qty_col = 17
     
-    # Find description column
-    desc_col = None
-    for col in range(len(data_row)):
-        if " - " in data_row[col]:
-            desc_col = col
-            break
-    
-    if desc_col is None:
-        return []
-    
-    # Find branch column (look for known branch names in the same row)
-    branch_col = None
-    for col in range(len(data_row)):
-        cell = data_row[col].strip()
-        if any(branch in cell for branch in BRANCH_KEYWORDS):
-            branch_col = col
-            break
-    
-    # Fallback: branch is often one column before description
-    if branch_col is None and desc_col > 0:
-        branch_col = desc_col - 1
-    elif branch_col is None:
-        branch_col = 0
-    
-    # Find quantity column: look for numeric value (not the description column)
-    qty_col = None
-    for col in range(len(data_row)):
-        if col == desc_col:
-            continue
-        try:
-            val = float(data_row[col])
-            if val >= 0:
-                qty_col = col
-                break
-        except:
-            pass
-    
-    if qty_col is None:
-        # Fallback: assume quantity is after description
-        if desc_col + 1 < len(data_row):
-            qty_col = desc_col + 1
-        else:
-            qty_col = len(data_row) - 1
-    
-    # Now parse all rows from first_data_row_idx onward
     items = []
-    for row in rows[first_data_row_idx:]:
-        if len(row) <= max(desc_col, branch_col, qty_col):
+    for row in rows[data_start_idx:]:
+        if len(row) <= max(branch_col, desc_col, qty_col):
             continue
+        branch = row[branch_col].strip()
         desc = row[desc_col].strip()
         if " - " not in desc:
             continue
-        branch = row[branch_col].strip()
         try:
             qty = float(row[qty_col])
         except:
@@ -386,7 +333,7 @@ if uploaded_file:
             st.session_state.transfers_df = calculate_all_transfers(st.session_state.inventory_data, BRANCHES)
             st.success(f"✅ Loaded {len(items)} product rows using {method}. Encoding: {encoding}")
     
-    # Proceed with rest of app
+    # Proceed with rest of app (identical to previous version – I'll include it below)
     complete_inventory = st.session_state.complete_inventory
     inventory_data = st.session_state.inventory_data
     transfers_df = st.session_state.transfers_df
@@ -587,8 +534,8 @@ else:
     st.info("👈 Upload your inventory CSV file (any format)")
     st.markdown("""
     ## How it works:
-    - **Automatically skips header rows** and finds the first row containing product data.
-    - **Detects columns** (branch, description, quantity) from that row.
-    - **Parses all subsequent rows** – no manual mapping needed.
-    - **Handles different encodings and malformed lines**.
+    - **Skips header rows** automatically.
+    - **Uses fixed column indices** (branch=15, description=16, quantity=17) based on your file structure.
+    - **Handles ragged columns** and missing rows.
+    - **Generates PDF reports** for every table.
     """)
