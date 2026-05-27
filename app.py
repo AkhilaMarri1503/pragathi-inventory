@@ -46,130 +46,76 @@ def get_brand(product):
         return "Pragathi"
 
 # ============================================
-# ROBUST CSV PARSING USING csv.reader
+# CSV PARSING WITH MANUAL COLUMN SELECTION
 # ============================================
 
-def process_inventory_file(uploaded_file):
-    """Parse SCHOOL STOCK.csv robustly using csv.reader."""
-    try:
-        content = uploaded_file.getvalue().decode('utf-8')
-        csv_reader = csv.reader(io.StringIO(content))
-        
-        all_items = []
-        
-        # Sample first 10 rows to detect columns
-        rows_sample = []
-        for i, row in enumerate(csv_reader):
-            rows_sample.append(row)
-            if i >= 10:
-                break
-        
-        # Detect column indices
-        branch_col = None
-        desc_col = None
-        qty_col = None
-        
-        branch_keywords = ["POPULAR SHOE COMPANY", "PRAGATHI SHOES AMD 2", "PRAGATHI SHOES RAGOLU", 
-                           "PRAGATHI SHOES BALAGA", "PRAGATHI SHOES AKP", "PRAGATHI SHOES"]
-        
-        for col_idx in range(max(len(row) for row in rows_sample) if rows_sample else 0):
-            # Description column: contains " - "
-            if desc_col is None and any(" - " in str(row[col_idx]) for row in rows_sample if col_idx < len(row)):
-                desc_col = col_idx
-            # Branch column: contains known branch names
-            if branch_col is None and any(any(keyword in str(row[col_idx]) for keyword in branch_keywords) 
-                                          for row in rows_sample if col_idx < len(row)):
-                branch_col = col_idx
-            # Quantity column: numeric
-            if qty_col is None:
-                for row in rows_sample:
-                    if col_idx < len(row):
-                        try:
-                            val = float(row[col_idx])
-                            if val >= 0:
-                                qty_col = col_idx
-                                break
-                        except:
-                            pass
-                if qty_col is not None:
-                    break
-        
-        # Fallback
-        if desc_col is None:
-            desc_col = 16
-        if branch_col is None:
-            branch_col = 15
-        if qty_col is None:
-            qty_col = 17
-        
-        # Re-read entire file
-        csv_reader = csv.reader(io.StringIO(content))
-        for row in csv_reader:
-            if len(row) <= max(branch_col, desc_col, qty_col):
-                continue
-            branch = row[branch_col].strip()
-            desc = row[desc_col].strip()
-            if " - " not in desc:
-                continue
-            try:
-                qty = float(row[qty_col])
-            except:
-                qty = 0
-            if qty < 0:
-                qty = 0
-            parts = desc.split(" - ")
-            if len(parts) >= 5:
-                all_items.append({
-                    "Branch": branch,
-                    "Product": parts[0].strip(),
-                    "Colour": parts[1].strip(),
-                    "Size": parts[2].strip(),
-                    "Article": parts[3].strip(),
-                    "MRP": parts[4].strip(),
-                    "Quantity": qty
-                })
-        
-        if not all_items:
-            st.error("No valid product rows found. Debug: branch_col={}, desc_col={}, qty_col={}".format(branch_col, desc_col, qty_col))
-            return None, None
-        
-        df_items = pd.DataFrame(all_items)
-        df_items['SKU'] = df_items.apply(lambda x: f"{x['Product']}|{x['Colour']}|{x['Size']}|{x['Article']}|{x['MRP']}", axis=1)
-        all_skus = df_items['SKU'].unique()
-        
-        complete_inventory = {}
-        for branch in BRANCHES.keys():
-            branch_data = df_items[df_items['Branch'] == branch] if branch in df_items['Branch'].values else pd.DataFrame()
-            sku_dict = {}
-            if not branch_data.empty:
-                for _, row in branch_data.iterrows():
-                    sku_dict[row['SKU']] = row['Quantity']
-            branch_records = []
-            for sku in all_skus:
-                sku_row = df_items[df_items['SKU'] == sku].iloc[0] if not df_items[df_items['SKU'] == sku].empty else None
-                if sku_row is not None:
-                    quantity = sku_dict.get(sku, 0)
-                    branch_records.append({
-                        "Branch": branch,
-                        "SKU": sku,
-                        "Product": sku_row['Product'],
-                        "Colour": sku_row['Colour'],
-                        "Size": sku_row['Size'],
-                        "Article": sku_row['Article'],
-                        "MRP": sku_row['MRP'],
-                        "Quantity": quantity,
-                        "Brand": get_brand(sku_row['Product'])
-                    })
-            complete_inventory[branch] = pd.DataFrame(branch_records)
-        
-        return complete_inventory, all_skus
-    
-    except Exception as e:
-        st.error(f"Error parsing file: {str(e)}")
+def read_csv_rows(uploaded_file):
+    content = uploaded_file.getvalue().decode('utf-8')
+    csv_reader = csv.reader(io.StringIO(content))
+    return list(csv_reader)
+
+def parse_inventory_with_columns(all_rows, branch_col, desc_col, qty_col):
+    all_items = []
+    for row in all_rows:
+        if len(row) <= max(branch_col, desc_col, qty_col):
+            continue
+        branch = row[branch_col].strip()
+        desc = row[desc_col].strip()
+        if " - " not in desc:
+            continue
+        try:
+            qty = float(row[qty_col])
+        except:
+            qty = 0
+        if qty < 0:
+            qty = 0
+        parts = desc.split(" - ")
+        if len(parts) >= 5:
+            all_items.append({
+                "Branch": branch,
+                "Product": parts[0].strip(),
+                "Colour": parts[1].strip(),
+                "Size": parts[2].strip(),
+                "Article": parts[3].strip(),
+                "MRP": parts[4].strip(),
+                "Quantity": qty
+            })
+    return all_items
+
+def build_inventory(all_items):
+    if not all_items:
         return None, None
+    df_items = pd.DataFrame(all_items)
+    df_items['SKU'] = df_items.apply(lambda x: f"{x['Product']}|{x['Colour']}|{x['Size']}|{x['Article']}|{x['MRP']}", axis=1)
+    all_skus = df_items['SKU'].unique()
+    complete_inventory = {}
+    for branch in BRANCHES.keys():
+        branch_data = df_items[df_items['Branch'] == branch] if branch in df_items['Branch'].values else pd.DataFrame()
+        sku_dict = {}
+        if not branch_data.empty:
+            for _, row in branch_data.iterrows():
+                sku_dict[row['SKU']] = row['Quantity']
+        branch_records = []
+        for sku in all_skus:
+            sku_row = df_items[df_items['SKU'] == sku].iloc[0] if not df_items[df_items['SKU'] == sku].empty else None
+            if sku_row is not None:
+                quantity = sku_dict.get(sku, 0)
+                branch_records.append({
+                    "Branch": branch,
+                    "SKU": sku,
+                    "Product": sku_row['Product'],
+                    "Colour": sku_row['Colour'],
+                    "Size": sku_row['Size'],
+                    "Article": sku_row['Article'],
+                    "MRP": sku_row['MRP'],
+                    "Quantity": quantity,
+                    "Brand": get_brand(sku_row['Product'])
+                })
+        complete_inventory[branch] = pd.DataFrame(branch_records)
+    return complete_inventory, all_skus
 
 # ============================================
-# TRANSFER CALCULATION (unchanged)
+# TRANSFER CALCULATION
 # ============================================
 
 def calculate_all_transfers(complete_inventory, branches_config):
@@ -309,18 +255,56 @@ with st.sidebar:
 # ============================================
 
 if uploaded_file:
-    if "inventory_data" not in st.session_state or st.session_state.get("file_name") != uploaded_file.name:
-        with st.spinner("Loading inventory data..."):
-            complete_inventory, all_skus = process_inventory_file(uploaded_file)
+    # Load raw rows once
+    if "raw_rows" not in st.session_state or st.session_state.get("file_name") != uploaded_file.name:
+        st.session_state.raw_rows = read_csv_rows(uploaded_file)
+        st.session_state.file_name = uploaded_file.name
+        st.session_state.column_choice_made = False
+    
+    raw_rows = st.session_state.raw_rows
+    
+    # Show preview
+    st.subheader("📄 CSV Preview (first 5 rows)")
+    preview_df = pd.DataFrame(raw_rows[:5])
+    st.dataframe(preview_df, use_container_width=True)
+    
+    # Column selection
+    st.subheader("🔧 Map Columns")
+    col_count = max(len(row) for row in raw_rows) if raw_rows else 0
+    if col_count == 0:
+        st.error("CSV appears empty.")
+        st.stop()
+    
+    default_branch = 15 if col_count > 15 else 0
+    default_desc = 16 if col_count > 16 else 14
+    default_qty = 17 if col_count > 17 else (15 if col_count > 15 else 0)
+    
+    branch_col = st.number_input("Branch Column Index (0-based)", min_value=0, max_value=col_count-1, value=default_branch, step=1)
+    desc_col = st.number_input("Description Column Index (0-based)", min_value=0, max_value=col_count-1, value=default_desc, step=1)
+    qty_col = st.number_input("Quantity Column Index (0-based)", min_value=0, max_value=col_count-1, value=default_qty, step=1)
+    
+    if st.button("✅ Load Data with These Columns"):
+        with st.spinner("Parsing inventory..."):
+            all_items = parse_inventory_with_columns(raw_rows, branch_col, desc_col, qty_col)
+            if not all_items:
+                st.error(f"No valid product rows found. Check that column {desc_col} contains ' - ' and column {qty_col} contains numbers.")
+                st.stop()
+            complete_inventory, all_skus = build_inventory(all_items)
             if complete_inventory is None:
                 st.stop()
             st.session_state.complete_inventory = complete_inventory
             st.session_state.all_skus = all_skus
             st.session_state.inventory_data = complete_inventory.copy()
-            st.session_state.file_name = uploaded_file.name
             st.session_state.transfers_df = calculate_all_transfers(st.session_state.inventory_data, BRANCHES)
-            st.success("Data loaded successfully!")
+            st.session_state.column_choice_made = True
+            st.success(f"Loaded {len(all_items)} product rows across all branches.")
+            st.rerun()
     
+    if not st.session_state.get("column_choice_made", False):
+        st.info("Please select the correct column indices using the preview and click 'Load Data'.")
+        st.stop()
+    
+    # ========== PROCEED WITH APP ==========
     complete_inventory = st.session_state.complete_inventory
     inventory_data = st.session_state.inventory_data
     transfers_df = st.session_state.transfers_df
@@ -346,7 +330,6 @@ if uploaded_file:
             pdf_data = generate_table_pdf(need_df, "Branch-wise Stock Needed Report", columns=["Branch", "Total Units Needed"])
             if pdf_data:
                 st.download_button("✅ Download PDF", pdf_data, "branch_needs.pdf")
-        
         st.markdown("---")
         st.subheader("Branch Stock Summary")
         summary = []
@@ -448,10 +431,8 @@ if uploaded_file:
                 search = st.text_input(f"🔍 Search Article Number", key=f"search_{branch}")
                 if search:
                     zero_stock = zero_stock[zero_stock['Article'].str.contains(search, case=False, na=False)]
-                
                 display_zero = zero_stock[['Product', 'Brand', 'Size', 'Colour', 'Article', 'MRP']].reset_index(drop=True)
                 display_zero.insert(0, "Select", False)
-                
                 edited = st.data_editor(
                     display_zero,
                     column_config={"Select": st.column_config.CheckboxColumn("Select", default=False)},
@@ -459,9 +440,7 @@ if uploaded_file:
                     hide_index=True,
                     key=f"editor_{branch}"
                 )
-                
                 selected = edited[edited['Select'] == True]['Article'].tolist()
-                
                 col_del, col_reset = st.columns(2)
                 with col_del:
                     if st.button(f"🗑️ Delete Selected", key=f"del_{branch}"):
@@ -479,10 +458,8 @@ if uploaded_file:
                         st.session_state.transfers_df = calculate_all_transfers(st.session_state.inventory_data, BRANCHES)
                         st.success(f"Reset {config['name']} to original data")
                         st.rerun()
-                
                 if st.button(f"📄 PDF - Zero Stock", key=f"zero_pdf_{branch}"):
-                    pdf_data = generate_table_pdf(zero_stock[['Product', 'Brand', 'Size', 'Colour', 'Article', 'MRP']], 
-                                                  f"{config['name']} - Zero Stock Items")
+                    pdf_data = generate_table_pdf(zero_stock[['Product', 'Brand', 'Size', 'Colour', 'Article', 'MRP']], f"{config['name']} - Zero Stock Items")
                     if pdf_data:
                         st.download_button("✅ Download", pdf_data, f"{branch}_zero_stock.pdf")
             else:
@@ -529,8 +506,10 @@ else:
     st.markdown("""
     ## How to use:
     1. **Upload your SCHOOL STOCK.csv** file.
-    2. Data will load automatically.
-    3. Use branch tabs to view and delete zero‑stock items.
-    4. Changes affect only the selected branch.
-    5. Use **Reset All Data** to start fresh.
+    2. Review the preview to identify which columns contain:
+       - **Branch name** (e.g., "POPULAR SHOE COMPANY")
+       - **Product description** (contains " - " like "BOYS SCHOOL SHOES - BLACK - 8 ...")
+       - **Quantity** (numeric)
+    3. Enter the column indices (0‑based) and click **Load Data**.
+    4. Then use the branch tabs to view, delete zero‑stock items, and generate PDFs.
     """)
