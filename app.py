@@ -7,7 +7,7 @@ import re
 
 st.set_page_config(page_title="Pragathi Shoes - Complete Transfer System", layout="wide")
 st.title("👞 Pragathi Shoes – Complete Stock Transfer System")
-st.markdown("**Warehouse (PRAGATHI SHOES) included as a tab but target fixed (no sidebar slider)**")
+st.markdown("**Real brand names from your Excel file – no more 'Boys'/'Girls'**")
 
 # ============================================
 # HELPER FUNCTIONS
@@ -127,11 +127,10 @@ def parse_excel(uploaded_file):
     return items
 
 # ============================================
-# INVENTORY BUILDER (all branches, including warehouse)
+# INVENTORY BUILDER – NO get_brand() anywhere
 # ============================================
 
 def build_inventory(items):
-    """Create per‑branch inventory for all branches."""
     if not items:
         return None, None, None
     
@@ -153,7 +152,7 @@ def build_inventory(items):
                 "Branch": branch,
                 "SKU": sku,
                 "Product": sku_row['Product'],
-                "Brand": sku_row['Brand'],
+                "Brand": sku_row['Brand'],   # <- uses actual brand from Excel
                 "Colour": sku_row['Colour'],
                 "Size": sku_row['Size'],
                 "Article": sku_row['Article'],
@@ -164,11 +163,10 @@ def build_inventory(items):
     return inv, all_branches, all_skus
 
 # ============================================
-# TRANSFER LOGIC (includes warehouse with fixed target)
+# TRANSFER LOGIC (same as before)
 # ============================================
 
 def calculate_transfers(inv, branch_targets):
-    """Calculate transfers between all branches (warehouse included)."""
     if not inv:
         return pd.DataFrame()
     all_skus = next(iter(inv.values()))['SKU'].unique()
@@ -204,7 +202,6 @@ def calculate_transfers(inv, branch_targets):
             elif qty < target:
                 deficit.append({"branch": branch, "need": target - qty, "current": qty})
         
-        # Match surplus to deficit
         for s in surplus:
             rem = s["excess"]
             for d in deficit[:]:
@@ -368,7 +365,7 @@ if st.session_state.loaded and st.session_state.branches:
         else:
             st.success("No transfers needed.")
 
-    # Zero Stock Anywhere (across all branches)
+    # Zero Stock Anywhere
     with tabs[2]:
         zero_all = []
         if branches:
@@ -405,7 +402,7 @@ if st.session_state.loaded and st.session_state.branches:
             st.success("✅ Every product has stock in at least one branch.")
             st.info("Note: Individual branches may still have zero‑stock items – see each branch tab (Table 1).")
 
-    # Branch‑specific tabs (including PRAGATHI SHOES)
+    # Branch‑specific tabs
     for idx, branch in enumerate(branches):
         with tabs[idx+3]:
             branch_df = inv[branch].copy()
@@ -491,7 +488,7 @@ if st.session_state.loaded and st.session_state.branches:
                 if pdf:
                     st.download_button("Download", pdf, f"{branch}_full.pdf")
 
-            # Transfers involving this branch
+            # Transfers
             br_trans = get_branch_transfers(transfers, branch)
             if not br_trans.empty:
                 st.subheader("Suggested Transfers")
@@ -508,17 +505,10 @@ else:
     ## Pragathi Shoes – Complete Stock Transfer System
 
     **Features:**
-    - **All branches** (including `PRAGATHI SHOES` warehouse) are shown as tabs.
-    - **Actual brand names** (ASIAN, BATA, LANCER, TODAY, etc.) are displayed – no more “Boys”/“Girls”.
-    - **Warehouse target is fixed** (20) and **not** adjustable in the sidebar – only retail branches have sliders.
-    - **Per‑SKU shortage calculation** gives accurate “Branch‑wise Stock Needed”.
-    - **Transfers** consider surplus/deficit among all branches (warehouse included).
-    - **Zero‑stock deletion** works per branch (search by article, multi‑select, reset).
+    - **Real brand names** (ASIAN, BATA, LANCER, etc.) – no more “Boys”/“Girls”.
+    - **All branches** (including warehouse) are shown as tabs.
+    - **Warehouse target fixed** (20) – no sidebar slider.
+    - **Per‑SKU shortage calculation**.
+    - **Zero‑stock deletion** per branch (search, multi‑select, reset).
     - **PDF reports** for every table.
-
-    ### How to use
-    1. Upload `SCHOOL STOCK.xlsx`.
-    2. Adjust retail branch targets in the sidebar (warehouse target is fixed at 20).
-    3. Review dashboard, transfers, and per‑branch zero‑stock deletion.
-    4. Download PDF reports as needed.
     """)
