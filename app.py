@@ -39,7 +39,6 @@ def get_brand(product):
 
 def read_csv_rows(uploaded_file):
     content = uploaded_file.getvalue().decode('utf-8', errors='ignore')
-    # Try to detect delimiter
     sniffer = csv.Sniffer()
     try:
         dialect = sniffer.sniff(content[:500])
@@ -50,7 +49,6 @@ def read_csv_rows(uploaded_file):
     return list(csv_reader)
 
 def parse_rows_manual(rows, branch_col, desc_col, qty_col, start_row=0):
-    """Parse using user-provided column indices."""
     items = []
     for row in rows[start_row:]:
         if len(row) <= max(branch_col, desc_col, qty_col):
@@ -255,7 +253,7 @@ if uploaded_file:
     if st.session_state.file_name != uploaded_file.name:
         st.session_state.raw_rows = read_csv_rows(uploaded_file)
         st.session_state.file_name = uploaded_file.name
-        st.session_state.inventory_loaded = False   # force re-parsing
+        st.session_state.inventory_loaded = False
         st.session_state.column_choice_made = False
 
     raw_rows = st.session_state.raw_rows
@@ -269,7 +267,7 @@ if uploaded_file:
 
     # If not yet loaded, provide manual column selection
     if not st.session_state.inventory_loaded:
-        st.subheader("🔧 Column Mapping (if auto‑detection fails, set manually)")
+        st.subheader("🔧 Column Mapping (use preview to find correct indices)")
         num_cols = max(len(row) for row in raw_rows) if raw_rows else 0
         if num_cols == 0:
             st.error("Empty file")
@@ -284,9 +282,7 @@ if uploaded_file:
                     break
             if desc_guess is not None:
                 break
-        # Branch guess: often column before description or contains known branch name
         branch_guess = desc_guess - 1 if desc_guess is not None else 0
-        # Quantity guess: after description
         qty_guess = desc_guess + 1 if desc_guess is not None else 1
 
         branch_col = st.number_input("Branch Column Index (0‑based)", min_value=0, max_value=num_cols-1, value=branch_guess, step=1)
@@ -300,6 +296,14 @@ if uploaded_file:
                 if not items:
                     st.error("No product rows found. Check that the description column contains ' - '.")
                     st.stop()
+                # Show branch distribution
+                df_temp = pd.DataFrame(items)
+                branch_counts = df_temp['Branch'].value_counts().reset_index()
+                branch_counts.columns = ['Branch', 'Item Count']
+                st.subheader("🔍 Branches detected in your file:")
+                st.dataframe(branch_counts, use_container_width=True)
+                if len(branch_counts) <= 1:
+                    st.warning("Only one branch detected. Make sure the Branch Column Index is correct (should point to column with different branch names).")
                 complete_inv, all_skus, branches = build_inventory(items)
                 if complete_inv is None:
                     st.stop()
