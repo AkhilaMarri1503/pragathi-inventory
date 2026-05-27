@@ -49,7 +49,7 @@ def get_brand(product):
         return "Pragathi"
 
 # ============================================
-# ULTRA-ROBUST CSV PARSER
+# ULTRA-ROBUST CSV PARSER – FIXED HEADER SKIP
 # ============================================
 
 def read_file_with_fallback(uploaded_file):
@@ -100,58 +100,73 @@ def parse_inventory_multi_method(content):
     return [], "none"
 
 def parse_from_rows(rows):
+    """Find first data row containing ' - ' and parse all subsequent rows."""
     if not rows:
         return []
+    
+    # Find the first row that contains " - " in any column
+    first_data_row_idx = None
+    for i, row in enumerate(rows):
+        for col in range(len(row)):
+            if " - " in row[col]:
+                first_data_row_idx = i
+                break
+        if first_data_row_idx is not None:
+            break
+    
+    if first_data_row_idx is None:
+        return []
+    
+    # Use that row to detect column indices
+    data_row = rows[first_data_row_idx]
+    
     # Find description column
     desc_col = None
-    for col in range(len(rows[0])):
-        for row in rows[:20]:
-            if col < len(row) and " - " in row[col]:
-                desc_col = col
-                break
-        if desc_col is not None:
+    for col in range(len(data_row)):
+        if " - " in data_row[col]:
+            desc_col = col
             break
+    
     if desc_col is None:
         return []
-    # Find branch column
+    
+    # Find branch column (look for known branch names in the same row)
     branch_col = None
-    for col in range(len(rows[0])):
-        for row in rows[:20]:
-            if col < len(row):
-                cell = row[col].strip()
-                if any(branch in cell for branch in BRANCH_KEYWORDS):
-                    branch_col = col
-                    break
-        if branch_col is not None:
+    for col in range(len(data_row)):
+        cell = data_row[col].strip()
+        if any(branch in cell for branch in BRANCH_KEYWORDS):
+            branch_col = col
             break
-    if branch_col is None:
-        branch_col = desc_col - 1 if desc_col > 0 else 0
-    # Find quantity column
+    
+    # Fallback: branch is often one column before description
+    if branch_col is None and desc_col > 0:
+        branch_col = desc_col - 1
+    elif branch_col is None:
+        branch_col = 0
+    
+    # Find quantity column: look for numeric value (not the description column)
     qty_col = None
-    for col in range(len(rows[0])):
-        numeric_count = 0
-        for row in rows[:20]:
-            if col < len(row):
-                try:
-                    float(row[col])
-                    numeric_count += 1
-                except:
-                    pass
-        if numeric_count >= 5:
-            qty_col = col
-            break
+    for col in range(len(data_row)):
+        if col == desc_col:
+            continue
+        try:
+            val = float(data_row[col])
+            if val >= 0:
+                qty_col = col
+                break
+        except:
+            pass
+    
     if qty_col is None:
-        qty_col = desc_col + 1 if desc_col + 1 < len(rows[0]) else len(rows[0]) - 1
+        # Fallback: assume quantity is after description
+        if desc_col + 1 < len(data_row):
+            qty_col = desc_col + 1
+        else:
+            qty_col = len(data_row) - 1
     
-    # Skip header row if it looks like one
-    start_row = 0
-    if len(rows) > 0:
-        first_row = rows[0]
-        if not any(" - " in cell for cell in first_row) and all(len(cell) < 30 for cell in first_row):
-            start_row = 1
-    
+    # Now parse all rows from first_data_row_idx onward
     items = []
-    for row in rows[start_row:]:
+    for row in rows[first_data_row_idx:]:
         if len(row) <= max(desc_col, branch_col, qty_col):
             continue
         desc = row[desc_col].strip()
@@ -210,7 +225,7 @@ def build_inventory(all_items):
     return complete_inventory, all_skus
 
 # ============================================
-# TRANSFER CALCULATION
+# TRANSFER CALCULATION (unchanged)
 # ============================================
 
 def calculate_all_transfers(complete_inventory, branches_config):
@@ -351,7 +366,7 @@ with st.sidebar:
 
 if uploaded_file:
     if "inventory_data" not in st.session_state or st.session_state.get("file_name") != uploaded_file.name:
-        with st.spinner("Parsing inventory file (multiple strategies)..."):
+        with st.spinner("Parsing inventory file..."):
             content, encoding = read_file_with_fallback(uploaded_file)
             items, method = parse_inventory_multi_method(content)
             if not items:
@@ -371,7 +386,7 @@ if uploaded_file:
             st.session_state.transfers_df = calculate_all_transfers(st.session_state.inventory_data, BRANCHES)
             st.success(f"✅ Loaded {len(items)} product rows using {method}. Encoding: {encoding}")
     
-    # Use session data
+    # Proceed with rest of app
     complete_inventory = st.session_state.complete_inventory
     inventory_data = st.session_state.inventory_data
     transfers_df = st.session_state.transfers_df
@@ -572,8 +587,8 @@ else:
     st.info("👈 Upload your inventory CSV file (any format)")
     st.markdown("""
     ## How it works:
-    - **Automatically detects** columns using multiple strategies.
-    - **Works with inconsistent column counts** (skips bad lines).
-    - **Handles different encodings** (UTF-8, Latin-1, etc.).
-    - **Shows debug info** if parsing fails.
+    - **Automatically skips header rows** and finds the first row containing product data.
+    - **Detects columns** (branch, description, quantity) from that row.
+    - **Parses all subsequent rows** – no manual mapping needed.
+    - **Handles different encodings and malformed lines**.
     """)
