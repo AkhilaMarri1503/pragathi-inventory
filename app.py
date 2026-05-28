@@ -8,7 +8,7 @@ import io
 
 st.set_page_config(page_title="Pragathi Shoes - Complete Transfer System", layout="wide")
 st.title("👞 Pragathi Shoes – Complete Stock Transfer System")
-st.markdown("**Global filters, grand totals, warehouse transfer report, branch sub‑tabs**")
+st.markdown("**Global filters, zero‑stock deletion, warehouse report, grand totals, Excel/PDF exports**")
 
 # ============================================
 # HELPER FUNCTIONS
@@ -61,7 +61,7 @@ def table_to_pdf(df, title, landscape=False):
     return pdf.output(dest='S').encode('latin-1', errors='ignore')
 
 # ============================================
-# EXCEL PARSER
+# EXCEL PARSER (reads Brand column)
 # ============================================
 
 def parse_excel(uploaded_file):
@@ -176,7 +176,7 @@ def build_inventory(items):
     return inv, all_branches, all_skus
 
 # ============================================
-# TRANSFER LOGIC (RETAIL FIRST, WAREHOUSE LAST)
+# TRANSFER LOGIC (retail first, warehouse last)
 # ============================================
 
 def calculate_transfers(inv, branch_targets, warehouse_name="PRAGATHI SHOES"):
@@ -184,14 +184,12 @@ def calculate_transfers(inv, branch_targets, warehouse_name="PRAGATHI SHOES"):
     all_skus = next(iter(inv.values()))['SKU'].unique()
     transfers = []
     
-    # Warehouse stock (read only)
     warehouse_df = inv.get(warehouse_name)
     warehouse_stock = {}
     if warehouse_df is not None:
         warehouse_stock = {row['SKU']: row['Quantity'] for _, row in warehouse_df.iterrows()}
     
     for sku in all_skus:
-        # Retail stock
         retail_stock = {}
         details = None
         for branch in retail_branches:
@@ -222,7 +220,7 @@ def calculate_transfers(inv, branch_targets, warehouse_name="PRAGATHI SHOES"):
             elif qty < target:
                 deficit.append({"branch": branch, "need": target - qty, "current": qty})
         
-        # Retail‑to‑retail transfers
+        # Retail‑to‑retail
         for s in surplus:
             rem = s["excess"]
             for d in deficit[:]:
@@ -249,7 +247,7 @@ def calculate_transfers(inv, branch_targets, warehouse_name="PRAGATHI SHOES"):
                         deficit.remove(d)
             s["excess"] = rem
         
-        # Warehouse supply for remaining deficits
+        # Warehouse top‑up for remaining deficits
         if deficit and warehouse_stock.get(sku, 0) > 0:
             wh_qty = warehouse_stock[sku]
             for d in deficit:
@@ -274,14 +272,6 @@ def calculate_transfers(inv, branch_targets, warehouse_name="PRAGATHI SHOES"):
                     d["need"] -= transfer
     return pd.DataFrame(transfers) if transfers else pd.DataFrame()
 
-def filter_inventory_by_brand_article(df, brands, articles):
-    """Filter dataframe by brand and article (case‑insensitive, substring)."""
-    if brands:
-        df = df[df['Brand'].str.contains('|'.join(brands), case=False, na=False)]
-    if articles:
-        df = df[df['Article'].str.contains('|'.join(articles), case=False, na=False)]
-    return df
-
 # ============================================
 # SESSION STATE
 # ============================================
@@ -293,6 +283,8 @@ if "loaded" not in st.session_state:
     st.session_state.targets = {}
     st.session_state.transfers = pd.DataFrame()
     st.session_state.file_name = None
+    st.session_state.filter_brands = []
+    st.session_state.filter_articles = []
 
 # ============================================
 # SIDEBAR – Global Filters & Retail Targets
@@ -305,7 +297,6 @@ with st.sidebar:
     if st.session_state.loaded:
         st.divider()
         st.subheader("🌍 Global Filters (All Branches)")
-        # Get unique brands and articles from all retail branches
         retail_branches = [b for b in st.session_state.branches if b != "PRAGATHI SHOES"]
         all_brands = set()
         all_articles = set()
@@ -316,11 +307,8 @@ with st.sidebar:
         brand_options = sorted(list(all_brands))
         article_options = sorted(list(all_articles))
         
-        # Multi‑select with "Select All" option
-        selected_brands = st.multiselect("Brands", brand_options, default=brand_options)
-        selected_articles = st.multiselect("Articles", article_options, default=article_options)
-        
-        # Store filter state in session
+        selected_brands = st.multiselect("Brands", brand_options, default=st.session_state.filter_brands)
+        selected_articles = st.multiselect("Articles", article_options, default=st.session_state.filter_articles)
         st.session_state.filter_brands = selected_brands
         st.session_state.filter_articles = selected_articles
         
@@ -363,7 +351,7 @@ if uploaded:
             st.session_state.transfers = transfers
             st.session_state.file_name = uploaded.name
             st.session_state.loaded = True
-            # Initialize filters with all values
+            # Initialise filters with all values
             retail_branches = [b for b in branches if b != "PRAGATHI SHOES"]
             all_brands = set()
             all_articles = set()
@@ -381,8 +369,8 @@ if st.session_state.loaded and st.session_state.branches:
     branches = st.session_state.branches
     targets = st.session_state.targets
     transfers = st.session_state.transfers
-    filter_brands = st.session_state.get("filter_brands", [])
-    filter_articles = st.session_state.get("filter_articles", [])
+    filter_brands = st.session_state.filter_brands
+    filter_articles = st.session_state.filter_articles
     warehouse_name = "PRAGATHI SHOES"
     retail_branches = [b for b in branches if b != warehouse_name]
 
@@ -390,22 +378,22 @@ if st.session_state.loaded and st.session_state.branches:
     filtered_inv = {}
     for b in branches:
         df = inv[b].copy()
-        if b != warehouse_name:  # filter only retail branches (warehouse untouched)
+        if b != warehouse_name:
             if filter_brands:
                 df = df[df['Brand'].str.contains('|'.join(filter_brands), case=False, na=False)]
             if filter_articles:
                 df = df[df['Article'].str.contains('|'.join(filter_articles), case=False, na=False)]
         filtered_inv[b] = df
 
-    # Dashboard (overview)
-    # Per‑branch shortage (based on filtered data? we'll use original for shortage calculation)
+    # Dashboard – branch shortages
     needs = {}
     for b in retail_branches:
-        branch_df = filtered_inv[b]  # use filtered for display but shortage should be based on actual? We'll keep original.
+        branch_df = filtered_inv[b]
         target_val = targets.get(b, 8)
         total_shortage = (target_val - branch_df['Quantity']).clip(lower=0).sum()
         needs[b] = int(total_shortage)
 
+    # Tab names: Dashboard, All Transfers, Warehouse Report, then each retail branch
     tab_names = ["📊 Dashboard", "🚚 All Transfers", "🏭 Warehouse Report"] + [f"🏪 {b}" for b in retail_branches]
     tabs = st.tabs(tab_names)
 
@@ -413,16 +401,17 @@ if st.session_state.loaded and st.session_state.branches:
     with tabs[0]:
         st.subheader("Branch‑wise Stock Needed (total units to reach target per SKU)")
         need_df = pd.DataFrame(list(needs.items()), columns=["Branch", "Units Needed"]).sort_values("Units Needed", ascending=False)
-        st.dataframe(need_df, use_container_width=True)
+        need_df_with_total = add_total_row(need_df, ["Units Needed"])
+        st.dataframe(need_df_with_total, use_container_width=True)
         col1, col2 = st.columns(2)
         with col1:
             if st.button("📄 Branch Needs PDF"):
-                pdf = table_to_pdf(need_df, "Branch-wise Stock Needed")
+                pdf = table_to_pdf(need_df_with_total, "Branch-wise Stock Needed")
                 if pdf:
                     st.download_button("Download PDF", pdf, "branch_needs.pdf")
         with col2:
             if st.button("📊 Branch Needs Excel"):
-                excel_data = table_to_excel(need_df)
+                excel_data = table_to_excel(need_df_with_total)
                 st.download_button("Download Excel", excel_data, "branch_needs.xlsx")
         
         st.markdown("---")
@@ -445,8 +434,6 @@ if st.session_state.loaded and st.session_state.branches:
                 "Low SKUs": low_skus
             })
         sum_df = pd.DataFrame(summary)
-        st.dataframe(sum_df, use_container_width=True)
-        # Add totals row for numeric columns
         sum_df_with_total = add_total_row(sum_df, ["Total Stock", "Target Total", "Shortage", "Surplus", "Zero SKUs", "Low SKUs"])
         st.dataframe(sum_df_with_total, use_container_width=True)
         col1, col2 = st.columns(2)
@@ -464,7 +451,6 @@ if st.session_state.loaded and st.session_state.branches:
     with tabs[1]:
         if not transfers.empty:
             disp = transfers[['From Branch', 'To Branch', 'Product', 'Brand', 'Size', 'Colour', 'Article', 'MRP', 'Transfer Qty']]
-            # Add total row
             disp_with_total = add_total_row(disp, ["Transfer Qty"])
             st.dataframe(disp_with_total, use_container_width=True)
             col1, col2 = st.columns(2)
@@ -480,7 +466,7 @@ if st.session_state.loaded and st.session_state.branches:
         else:
             st.success("No transfers needed.")
 
-    # ========== WAREHOUSE REPORT (outgoing transfers only) ==========
+    # ========== WAREHOUSE REPORT (outgoing only) ==========
     with tabs[2]:
         st.subheader("🏭 Warehouse Outgoing Transfers Report")
         wh_outgoing = transfers[transfers['From Branch'].str.contains(warehouse_name, case=False, na=False)].copy()
@@ -501,19 +487,76 @@ if st.session_state.loaded and st.session_state.branches:
         else:
             st.info("No transfers originating from warehouse.")
 
-    # ========== BRANCH TABS (each with 4 sub‑tabs) ==========
+    # ========== BRANCH TABS (5 sub‑tabs each) ==========
     for idx, branch in enumerate(retail_branches):
         with tabs[idx+3]:
             branch_df = filtered_inv[branch]  # already filtered
             tgt = targets.get(branch, 8)
             min_level = max(1, tgt // 2)
             
-            # Create sub‑tabs for this branch
-            sub_tab1, sub_tab2, sub_tab3, sub_tab4 = st.tabs([
-                "📦 Available Stock", "⚠️ Required Stock", "🏭 Warehouse Top‑up", "🔄 Branch Transfer Data"
+            # 5 sub‑tabs: Zero Stock, Available Stock, Required Stock, Warehouse Top‑up, Branch Transfer Data
+            sub_tab0, sub_tab1, sub_tab2, sub_tab3, sub_tab4 = st.tabs([
+                "🔴 Zero Stock Items", "📦 Available Stock", "⚠️ Required Stock", 
+                "🏭 Warehouse Top‑up", "🔄 Branch Transfer Data"
             ])
             
-            # ===== Sub‑tab 1: Available Stock =====
+            # ----- Sub‑tab 0: Zero Stock Items (with search, delete, reset) -----
+            with sub_tab0:
+                st.subheader(f"Zero Stock Items – {branch}")
+                zero = branch_df[branch_df['Quantity'] == 0].copy()
+                if not zero.empty:
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        search_article = st.text_input(f"🔍 Search Article", key=f"search_article_{branch}")
+                    with col2:
+                        search_brand = st.text_input(f"🏷️ Search Brand", key=f"search_brand_{branch}")
+                    if search_article:
+                        zero = zero[zero['Article'].str.contains(search_article, case=False, na=False)]
+                    if search_brand:
+                        zero = zero[zero['Brand'].str.contains(search_brand, case=False, na=False)]
+                    
+                    disp_zero = zero[['Product', 'Brand', 'Size', 'Colour', 'Article', 'MRP']].reset_index(drop=True)
+                    disp_zero.insert(0, "Select", False)
+                    edited = st.data_editor(
+                        disp_zero,
+                        column_config={"Select": st.column_config.CheckboxColumn("Select")},
+                        disabled=['Product','Brand','Size','Colour','Article','MRP'],
+                        hide_index=True,
+                        key=f"zero_edit_{branch}"
+                    )
+                    selected = edited[edited['Select'] == True]['Article'].tolist()
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        if st.button(f"🗑️ Delete Selected", key=f"del_{branch}"):
+                            if selected:
+                                new_df = branch_df[~branch_df['Article'].isin(selected)]
+                                st.session_state.inv[branch] = new_df
+                                # Recalculate transfers after deletion
+                                st.session_state.transfers = calculate_transfers(st.session_state.inv, st.session_state.targets)
+                                st.success(f"Deleted {len(selected)} item(s) from {branch}")
+                                st.rerun()
+                            else:
+                                st.warning("No items selected")
+                    with col2:
+                        if st.button(f"🔄 Reset Branch Data", key=f"reset_{branch}"):
+                            st.session_state.inv[branch] = inv[branch].copy()
+                            st.session_state.transfers = calculate_transfers(st.session_state.inv, st.session_state.targets)
+                            st.success(f"Reset {branch} to original")
+                            st.rerun()
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        if st.button(f"📄 PDF – Zero Stock", key=f"zero_pdf_{branch}"):
+                            pdf = table_to_pdf(zero[['Product','Brand','Size','Colour','Article','MRP']], f"{branch} - Zero Stock")
+                            if pdf:
+                                st.download_button("Download PDF", pdf, f"{branch}_zero.pdf")
+                    with col2:
+                        if st.button(f"📊 Excel – Zero Stock", key=f"zero_excel_{branch}"):
+                            excel_data = table_to_excel(zero[['Product','Brand','Size','Colour','Article','MRP']])
+                            st.download_button("Download Excel", excel_data, f"{branch}_zero.xlsx")
+                else:
+                    st.success("No zero stock items in this branch.")
+            
+            # ----- Sub‑tab 1: Available Stock -----
             with sub_tab1:
                 st.subheader(f"Available Stock – {branch}")
                 avail = branch_df[['Product', 'Brand', 'Size', 'Colour', 'Article', 'MRP', 'Quantity']].copy()
@@ -522,16 +565,16 @@ if st.session_state.loaded and st.session_state.branches:
                 st.dataframe(avail_with_total, use_container_width=True)
                 col1, col2 = st.columns(2)
                 with col1:
-                    if st.button(f"📄 PDF – Available Stock", key=f"avail_pdf_{branch}"):
+                    if st.button(f"📄 PDF – Available", key=f"avail_pdf_{branch}"):
                         pdf = table_to_pdf(avail_with_total, f"{branch} - Available Stock", landscape=True)
                         if pdf:
                             st.download_button("Download PDF", pdf, f"{branch}_available.pdf")
                 with col2:
-                    if st.button(f"📊 Excel – Available Stock", key=f"avail_excel_{branch}"):
+                    if st.button(f"📊 Excel – Available", key=f"avail_excel_{branch}"):
                         excel_data = table_to_excel(avail_with_total)
                         st.download_button("Download Excel", excel_data, f"{branch}_available.xlsx")
             
-            # ===== Sub‑tab 2: Required Stock (shortage) =====
+            # ----- Sub‑tab 2: Required Stock (shortage) -----
             with sub_tab2:
                 st.subheader(f"Required Stock – {branch}")
                 shortage_df = branch_df[branch_df['Quantity'] < tgt].copy()
@@ -543,22 +586,21 @@ if st.session_state.loaded and st.session_state.branches:
                     st.dataframe(req_with_total, use_container_width=True)
                     col1, col2 = st.columns(2)
                     with col1:
-                        if st.button(f"📄 PDF – Required Stock", key=f"req_pdf_{branch}"):
+                        if st.button(f"📄 PDF – Required", key=f"req_pdf_{branch}"):
                             pdf = table_to_pdf(req_with_total, f"{branch} - Required Stock", landscape=True)
                             if pdf:
                                 st.download_button("Download PDF", pdf, f"{branch}_required.pdf")
                     with col2:
-                        if st.button(f"📊 Excel – Required Stock", key=f"req_excel_{branch}"):
+                        if st.button(f"📊 Excel – Required", key=f"req_excel_{branch}"):
                             excel_data = table_to_excel(req_with_total)
                             st.download_button("Download Excel", excel_data, f"{branch}_required.xlsx")
                 else:
                     st.success(f"All SKUs in {branch} meet or exceed target ({tgt}).")
             
-            # ===== Sub‑tab 3: Warehouse Top‑up (transfers from warehouse to this branch) =====
+            # ----- Sub‑tab 3: Warehouse Top‑up (transfers from warehouse to this branch) -----
             with sub_tab3:
                 st.subheader(f"Warehouse Top‑up – {branch}")
                 wh_to_branch = transfers[transfers['To Branch'] == branch].copy()
-                # Filter only those from warehouse
                 wh_to_branch = wh_to_branch[wh_to_branch['From Branch'].str.contains(warehouse_name, case=False, na=False)]
                 if not wh_to_branch.empty:
                     topup = wh_to_branch[['Product', 'Brand', 'Size', 'Colour', 'Article', 'MRP', 'Transfer Qty']]
@@ -567,29 +609,25 @@ if st.session_state.loaded and st.session_state.branches:
                     st.dataframe(topup_with_total, use_container_width=True)
                     col1, col2 = st.columns(2)
                     with col1:
-                        if st.button(f"📄 PDF – Warehouse Top‑up", key=f"topup_pdf_{branch}"):
+                        if st.button(f"📄 PDF – Top‑up", key=f"topup_pdf_{branch}"):
                             pdf = table_to_pdf(topup_with_total, f"{branch} - Warehouse Top‑up", landscape=True)
                             if pdf:
                                 st.download_button("Download PDF", pdf, f"{branch}_topup.pdf")
                     with col2:
-                        if st.button(f"📊 Excel – Warehouse Top‑up", key=f"topup_excel_{branch}"):
+                        if st.button(f"📊 Excel – Top‑up", key=f"topup_excel_{branch}"):
                             excel_data = table_to_excel(topup_with_total)
                             st.download_button("Download Excel", excel_data, f"{branch}_topup.xlsx")
                 else:
                     st.info(f"No warehouse top‑up suggested for {branch}.")
             
-            # ===== Sub‑tab 4: Branch Transfer Data (Outgoing and Incoming) =====
+            # ----- Sub‑tab 4: Branch Transfer Data (outgoing + incoming) -----
             with sub_tab4:
                 st.subheader(f"Branch Transfer Data – {branch}")
-                # Get all transfers involving this branch
                 branch_transfers = transfers[(transfers['From Branch'] == branch) | (transfers['To Branch'] == branch)].copy()
                 if not branch_transfers.empty:
-                    # Split into outgoing and incoming
-                    outgoing = branch_transfers[branch_transfers['From Branch'] == branch].copy()
-                    incoming = branch_transfers[branch_transfers['To Branch'] == branch].copy()
-                    
-                    # Outgoing sub‑sub‑tab
+                    # Outgoing
                     st.markdown("#### 📤 Outgoing (from this branch)")
+                    outgoing = branch_transfers[branch_transfers['From Branch'] == branch].copy()
                     if not outgoing.empty:
                         out_disp = outgoing[['To Branch', 'Product', 'Brand', 'Size', 'Colour', 'Article', 'MRP', 'Transfer Qty']]
                         out_disp.rename(columns={'To Branch': 'Destination', 'Transfer Qty': 'Quantity'}, inplace=True)
@@ -608,8 +646,9 @@ if st.session_state.loaded and st.session_state.branches:
                     else:
                         st.info("No outgoing transfers.")
                     
-                    # Incoming sub‑sub‑tab
+                    # Incoming
                     st.markdown("#### 📥 Incoming (to this branch)")
+                    incoming = branch_transfers[branch_transfers['To Branch'] == branch].copy()
                     if not incoming.empty:
                         in_disp = incoming[['From Branch', 'Product', 'Brand', 'Size', 'Colour', 'Article', 'MRP', 'Transfer Qty']]
                         in_disp.rename(columns={'From Branch': 'Source', 'Transfer Qty': 'Quantity'}, inplace=True)
@@ -633,16 +672,13 @@ if st.session_state.loaded and st.session_state.branches:
 else:
     st.info("👈 Upload your SCHOOL STOCK.xlsx file to begin.")
     st.markdown("""
-    ## New Features
+    ## Complete Features
 
     - **Global Brand & Article filters** (affect all retail branch views).
-    - **Select all** for brand filter (multiselect).
+    - **Zero stock table** per branch – search by Article/Brand, multi‑select delete, reset, PDF/Excel.
+    - **Available Stock**, **Required Stock**, **Warehouse Top‑up**, and **Branch Transfer Data** (split into Outgoing/Incoming) sub‑tabs.
     - **Grand total rows** at the end of numeric columns.
     - **Warehouse report** showing all outgoing transfers.
-    - Each branch has **4 sub‑tabs**:
-      1. Available Stock
-      2. Required Stock (shortage)
-      3. Warehouse Top‑up
-      4. Branch Transfer Data (split into Outgoing and Incoming)
     - **PDF and Excel export** for every table.
+    - Transfer logic: retail‑to‑retail first, warehouse supplies only remaining deficits.
     """)
