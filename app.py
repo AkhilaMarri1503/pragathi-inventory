@@ -8,7 +8,7 @@ import io
 
 st.set_page_config(page_title="Pragathi Shoes - Complete Transfer System", layout="wide")
 st.title("👞 Pragathi Shoes – Complete Stock Transfer System")
-st.markdown("**Global filters, zero‑stock deletion, warehouse report, grand totals, Excel/PDF exports**")
+st.markdown("**Global filters, zero‑stock deletion with Select All, warehouse report, grand totals**")
 
 # ============================================
 # HELPER FUNCTIONS
@@ -500,7 +500,7 @@ if st.session_state.loaded and st.session_state.branches:
                 "🏭 Warehouse Top‑up", "🔄 Branch Transfer Data"
             ])
             
-            # ----- Sub‑tab 0: Zero Stock Items (with search, delete, reset) -----
+            # ----- Sub‑tab 0: Zero Stock Items (with search, select all, delete, reset) -----
             with sub_tab0:
                 st.subheader(f"Zero Stock Items – {branch}")
                 zero = branch_df[branch_df['Quantity'] == 0].copy()
@@ -515,8 +515,24 @@ if st.session_state.loaded and st.session_state.branches:
                     if search_brand:
                         zero = zero[zero['Brand'].str.contains(search_brand, case=False, na=False)]
                     
-                    disp_zero = zero[['Product', 'Brand', 'Size', 'Colour', 'Article', 'MRP']].reset_index(drop=True)
-                    disp_zero.insert(0, "Select", False)
+                    # Prepare display dataframe
+                    display_zero = zero[['Product', 'Brand', 'Size', 'Colour', 'Article', 'MRP']].reset_index(drop=True)
+                    
+                    # Add Select All checkbox
+                    select_all_key = f"select_all_{branch}"
+                    if select_all_key not in st.session_state:
+                        st.session_state[select_all_key] = False
+                    
+                    select_all = st.checkbox("✅ Select All", key=f"select_all_check_{branch}")
+                    if select_all:
+                        st.session_state[select_all_key] = True
+                    else:
+                        st.session_state[select_all_key] = False
+                    
+                    # Create dataframe with Select column
+                    disp_zero = display_zero.copy()
+                    disp_zero.insert(0, "Select", st.session_state[select_all_key])
+                    
                     edited = st.data_editor(
                         disp_zero,
                         column_config={"Select": st.column_config.CheckboxColumn("Select")},
@@ -525,6 +541,7 @@ if st.session_state.loaded and st.session_state.branches:
                         key=f"zero_edit_{branch}"
                     )
                     selected = edited[edited['Select'] == True]['Article'].tolist()
+                    
                     col1, col2 = st.columns(2)
                     with col1:
                         if st.button(f"🗑️ Delete Selected", key=f"del_{branch}"):
@@ -543,6 +560,7 @@ if st.session_state.loaded and st.session_state.branches:
                             st.session_state.transfers = calculate_transfers(st.session_state.inv, st.session_state.targets)
                             st.success(f"Reset {branch} to original")
                             st.rerun()
+                    
                     col1, col2 = st.columns(2)
                     with col1:
                         if st.button(f"📄 PDF – Zero Stock", key=f"zero_pdf_{branch}"):
@@ -675,7 +693,7 @@ else:
     ## Complete Features
 
     - **Global Brand & Article filters** (affect all retail branch views).
-    - **Zero stock table** per branch – search by Article/Brand, multi‑select delete, reset, PDF/Excel.
+    - **Zero stock table** per branch – search by Article/Brand, **Select All** checkbox, multi‑select delete, reset, PDF/Excel.
     - **Available Stock**, **Required Stock**, **Warehouse Top‑up**, and **Branch Transfer Data** (split into Outgoing/Incoming) sub‑tabs.
     - **Grand total rows** at the end of numeric columns.
     - **Warehouse report** showing all outgoing transfers.
